@@ -8,7 +8,7 @@ A minimal script to extract and save dense semantic features from images using t
 ### 1. Extract and Save Features
 
 ```bash
-python extract_features.py football.png
+python extract_dense_features.py football.png
 ```
 
 ### 2. Load and Use Features
