@@ -11,10 +11,24 @@ logger = logging.getLogger(__name__)
 # Elasticsearch 连接配置
 ES_HOST = "http://localhost:9200"
 INDEX_NAME = "radseg_features"
-DIMENSIONS = 1536 # RADSeg (siglip2-g) 提取的特征维度
 BATCH_SIZE = 500  # 每次批量写入文档数量，可根据内存调整
 
-def setup_elasticsearch():
+def infer_dimensions(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                data = json.loads(line.strip())
+                clusters = data.get("clusters", [])
+                for cluster in clusters:
+                    vector = cluster["v"] if isinstance(cluster, dict) else cluster
+                    if vector:
+                        return len(vector)
+            except json.JSONDecodeError:
+                continue
+    raise ValueError(f"Could not infer vector dimensions from {file_path}")
+
+
+def setup_elasticsearch(dimensions):
     """初始化 Elasticsearch 连接并创建索引"""
     logger.info(f"正在尝试连接 Elasticsearch: {ES_HOST}...")
 
@@ -44,7 +58,7 @@ def setup_elasticsearch():
                 },
                 "cluster_vector": {
                     "type": "dense_vector",
-                    "dims": DIMENSIONS,
+                    "dims": dimensions,
                     "index": True,
                     "similarity": "cosine"
                 },
@@ -131,7 +145,9 @@ def bulk_index_features(file_path):
         logger.error("请确认是否已经使用 FileZilla 将 my_features.jsonl 下载到本地 D:\\RADSeg 目录下！")
         return
 
-    es = setup_elasticsearch()
+    dimensions = infer_dimensions(file_path)
+    logger.info(f"检测到向量维度: {dimensions}")
+    es = setup_elasticsearch(dimensions)
     
     # 估算总量（主要用于显示好看的进度条）
     total_actions = count_total_clusters(file_path)

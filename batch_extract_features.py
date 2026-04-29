@@ -8,6 +8,7 @@ import torchvision.transforms as T
 from PIL import Image, ImageFile
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+from vl_backends import create_backend
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -130,45 +131,34 @@ def adaptive_spherical_kmeans(
 class FeatureBatchExtractor:
     def __init__(
         self,
-        model_version="c-radio_v4-h",
-        lang_model="siglip2-g",
+        backend_name="talk2dino",
         device="cuda",
         num_clusters=100,
         min_cluster_pixels=8,
         merge_similarity=0.985,
+        model_version="c-radio_v4-h",
+        lang_model="siglip2-g",
+        model_id=None,
     ):
         self.device = device
         self.num_clusters = num_clusters
         self.min_cluster_pixels = min_cluster_pixels
         self.merge_similarity = merge_similarity
+        self.backend_name = backend_name
 
-        print(f"Loading RADSeg model {model_version}...")
-        self.radseg = torch.hub.load(
-            "RADSeg-OVSS/RADSeg",
-            "radseg_encoder",
+        self.backend = create_backend(
+            backend_name=backend_name,
+            device=self.device,
             model_version=model_version,
             lang_model=lang_model,
-            device=self.device,
-            predict=False,
+            model_id=model_id,
         )
-        if hasattr(self.radseg, "model"):
-            self.radseg.model.eval()
-        else:
-            self.radseg.eval()
-
-        self.transform = T.Compose(
-            [
-                T.ToTensor(),
-                T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-            ]
-        )
+        self.transform = self.backend.transform
 
     @torch.no_grad()
     def process_tensor(self, img_tensor):
         img_tensor = img_tensor.to(self.device)
-
-        scga_feat = self.radseg.encode_image_to_feat_map(img_tensor)
-        visual_aligned = self.radseg.align_spatial_features_with_language(scga_feat, onehot=False)
+        visual_aligned = self.backend.encode_image_to_feature_map(img_tensor)
 
         _, channels, height_fm, width_fm = visual_aligned.shape
         dense_flat = visual_aligned.permute(0, 2, 3, 1).reshape(-1, channels)
@@ -217,9 +207,16 @@ class FastImageDataset(Dataset):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Batch extract clustered RADSeg features from images.")
+    parser = argparse.ArgumentParser(description="Batch extract clustered dense vision-language features from images.")
     parser.add_argument("--input_dir", type=str, default="images/", help="Directory with images")
     parser.add_argument("--output_file", type=str, default="/tmp/features.jsonl", help="Output JSONL file")
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="talk2dino",
+        choices=["talk2dino", "radseg"],
+        help="Vision-language backend used to produce dense features",
+    )
     parser.add_argument(
         "--start_image",
         type=int,
@@ -246,14 +243,19 @@ if __name__ == "__main__":
         help="Merge clusters whose cosine similarity exceeds this threshold",
     )
     parser.add_argument("--model_version", type=str, default="c-radio_v4-h")
+    parser.add_argument("--lang_model", type=str, default="siglip2-g")
+    parser.add_argument("--model_id", type=str, default="lorebianchi98/Talk2DINO-ViTL")
 
     args = parser.parse_args()
 
     extractor = FeatureBatchExtractor(
+        backend_name=args.backend,
         num_clusters=args.num_clusters,
         model_version=args.model_version,
+        lang_model=args.lang_model,
         min_cluster_pixels=args.min_cluster_pixels,
         merge_similarity=args.merge_similarity,
+        model_id=args.model_id,
     )
 
     if not os.path.exists(args.input_dir):

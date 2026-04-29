@@ -12,6 +12,7 @@ from elasticsearch import Elasticsearch
 from matplotlib import patches
 from PIL import Image
 from redis import Redis
+from vl_backends import create_backend
 
 
 class TextSearchVisualizer:
@@ -22,12 +23,14 @@ class TextSearchVisualizer:
         redis_url,
         redis_key_prefix,
         image_root,
-        model_version="c-radio_v4-h",
-        lang_model="siglip2-g",
+        backend_name="talk2dino",
         device="cpu",
         vector_field="vector",
         image_id_field="image_id",
         cluster_id_field="cluster_id",
+        model_version="c-radio_v4-h",
+        lang_model="siglip2-g",
+        model_id=None,
     ):
         self.es = Elasticsearch(es_host)
         self.redis = Redis.from_url(redis_url)
@@ -38,24 +41,18 @@ class TextSearchVisualizer:
         self.image_id_field = image_id_field
         self.cluster_id_field = cluster_id_field
         self.device = device
+        self.backend_name = backend_name
 
-        print(f"Loading RADSeg text encoder on {device}...")
-        self.radseg = torch.hub.load(
-            "RADSeg-OVSS/RADSeg",
-            "radseg_encoder",
+        self.backend = create_backend(
+            backend_name=backend_name,
+            device=device,
             model_version=model_version,
             lang_model=lang_model,
-            device=device,
-            predict=False,
+            model_id=model_id,
         )
-        if hasattr(self.radseg, "model"):
-            self.radseg.model.eval()
-        else:
-            self.radseg.eval()
     @torch.no_grad()
     def encode_prompts(self, prompts):
-        embeddings = self.radseg.encode_prompts(prompts, onehot=False)
-        return F.normalize(embeddings, dim=-1)
+        return self.backend.encode_text(prompts)
 
     @staticmethod
     def normalize_negative_prompts(negative_text):
@@ -277,8 +274,16 @@ def main():
     parser.add_argument("--redis_url", type=str, default="redis://localhost:6379/0", help="Redis connection URL")
     parser.add_argument("--redis_key_prefix", type=str, default="fm", help="Redis key prefix used for feature maps")
     parser.add_argument("--image_root", type=str, default="images", help="Directory containing original images")
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="talk2dino",
+        choices=["talk2dino", "radseg"],
+        help="Vision-language backend used to encode the query text",
+    )
     parser.add_argument("--model_version", type=str, default="c-radio_v4-h", help="RADSeg model version")
     parser.add_argument("--lang_model", type=str, default="siglip2-g", help="RADSeg language model")
+    parser.add_argument("--model_id", type=str, default="lorebianchi98/Talk2DINO-ViTL", help="Talk2DINO model id")
     parser.add_argument("--device", type=str, default="cpu", help="Device for text encoding")
     parser.add_argument("--vector_field", type=str, default=None, help="Override ES vector field name")
     parser.add_argument("--output_path", type=str, default=None, help="Optional path to save the matplotlib figure")
@@ -292,8 +297,10 @@ def main():
         redis_url=args.redis_url,
         redis_key_prefix=args.redis_key_prefix,
         image_root=args.image_root,
+        backend_name=args.backend,
         model_version=args.model_version,
         lang_model=args.lang_model,
+        model_id=args.model_id,
         device=args.device,
         vector_field=vector_field,
     )
