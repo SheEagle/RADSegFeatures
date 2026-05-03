@@ -1,10 +1,11 @@
 *.pyc
 __pycache__
 *.log
+*.jsonl
 *.o
 *build*
 /work_logs
 /results
 .vscode
 .DS_Store
-work_logs
+work_logs

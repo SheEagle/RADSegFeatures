@@ -267,9 +267,9 @@ def infer_vector_field(index_name):
 
 def main():
     parser = argparse.ArgumentParser(description="Test Elasticsearch text search with Redis-backed feature-map visualization.")
-    parser.add_argument("query", type=str, help="Positive text query")
-    parser.add_argument("--negative_text", type=str, default="background", help="Comma-separated negative prompts")
-    parser.add_argument("--top_k", type=int, default=6, help="Number of unique images to visualize")
+    parser.add_argument("query", type=str, nargs="?",default="arched bridge over river", help="Positive text query")
+    parser.add_argument("--negative_text", type=str, default="background,text", help="Comma-separated negative prompts")
+    parser.add_argument("--top_k", type=int, default=10, help="Number of unique images to visualize")
     parser.add_argument("--candidate_k", type=int, default=120, help="Number of candidate clusters retrieved from ES before direct negative scoring")
     parser.add_argument("--temperature", type=float, default=80.0, help="Softmax temperature for reranking")
     parser.add_argument("--es_host", type=str, default="http://localhost:9200", help="Elasticsearch host")
