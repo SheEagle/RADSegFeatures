@@ -157,7 +157,8 @@ class FeatureBatchExtractor:
 
     @torch.no_grad()
     def process_tensor(self, img_tensor):
-        img_tensor = img_tensor.to(self.device)
+        if isinstance(img_tensor, torch.Tensor):
+            img_tensor = img_tensor.to(self.device)
         visual_aligned = self.backend.encode_image_to_feature_map(img_tensor)
 
         _, channels, height_fm, width_fm = visual_aligned.shape
@@ -200,10 +201,15 @@ class FastImageDataset(Dataset):
         img_name = os.path.basename(path)
         try:
             img = Image.open(path).convert("RGB")
-            tensor = self.transform(img)
-            return tensor, img_name, True
+            sample = self.transform(img) if self.transform is not None else img
+            return sample, img_name, True
         except Exception:
-            return torch.zeros((3, 224, 224)), img_name, False
+            fallback = torch.zeros((3, 224, 224)) if self.transform is not None else None
+            return fallback, img_name, False
+
+
+def passthrough_collate(batch):
+    return batch
 
 
 if __name__ == "__main__":
@@ -293,7 +299,14 @@ if __name__ == "__main__":
 
     dataset = FastImageDataset(image_paths, extractor.transform)
     # Use a single-process loader to avoid /dev/shm exhaustion on shared GPU nodes.
-    dataloader = DataLoader(dataset, batch_size=1, num_workers=0, pin_memory=False, shuffle=False)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=0,
+        pin_memory=False,
+        shuffle=False,
+        collate_fn=passthrough_collate,
+    )
 
     processed_ids = set()
     if os.path.exists(args.output_file):
@@ -306,19 +319,18 @@ if __name__ == "__main__":
         print(f"Resuming: {len(processed_ids)} images already processed. Skipping them.")
 
     with open(args.output_file, "a", encoding="utf-8") as write_file:
-        for tensor, img_names, valid_flags in tqdm(dataloader):
-            img_name = img_names[0]
+        for batch in tqdm(dataloader):
+            sample, img_name, is_valid = batch[0]
 
             if img_name in processed_ids:
                 continue
 
-            is_valid = valid_flags[0].item()
-            if not is_valid:
+            if not bool(is_valid):
                 print(f"Invalid or corrupted image skipped: {img_name}")
                 continue
 
             try:
-                cluster_result = extractor.process_tensor(tensor)
+                cluster_result = extractor.process_tensor(sample)
                 data = {
                     "image_id": img_name,
                     "clusters": cluster_result["clusters"],

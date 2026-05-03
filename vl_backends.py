@@ -1,11 +1,15 @@
+import importlib
+import os
 import math
+import sys
 from dataclasses import dataclass
 from typing import List
 
+import clip
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
-from transformers import AutoModel
+from huggingface_hub import snapshot_download
 
 
 @dataclass
@@ -65,13 +69,54 @@ class Talk2DINOBackend(VisionLanguageBackend):
     def __init__(self, model_id="lorebianchi98/Talk2DINO-ViTL", device="cuda"):
         super().__init__(device=device)
         print(f"Loading Talk2DINO model {model_id}...")
-        self.model = AutoModel.from_pretrained(model_id, trust_remote_code=True).to(self.device).eval()
-        self.transform = T.Compose(
-            [
-                T.Resize((448, 448)),
-                T.ToTensor(),
-            ]
+        package_name = model_id.replace("/", "__").replace("-", "_")
+        local_model_dir = snapshot_download(
+            repo_id=model_id,
+            local_dir=os.path.join(os.getcwd(), "scratch", "hf_models", package_name),
+            local_dir_use_symlinks=False,
         )
+        init_path = os.path.join(local_model_dir, "__init__.py")
+        if not os.path.exists(init_path):
+            with open(init_path, "w", encoding="utf-8") as handle:
+                handle.write("")
+        parent_dir = os.path.dirname(local_model_dir)
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
+        talk2dino_module = importlib.import_module(f"{package_name}.modeling_talk2dino")
+        talk2dino_cls = getattr(talk2dino_module, "Talk2DINO")
+        if not hasattr(talk2dino_cls, "all_tied_weights_keys"):
+            talk2dino_cls.all_tied_weights_keys = {}
+
+        clip_model_name = "ViT-B/16"
+        with open(os.path.join(local_model_dir, "config.json"), "r", encoding="utf-8") as handle:
+            config = handle.read()
+        if '"clip_model_name"' in config:
+            import json
+
+            clip_model_name = json.loads(config).get("clip_model_name", clip_model_name)
+
+        # Talk2DINO initializes CLIP on the meta device for HF loading, which breaks in our
+        # environment. Reuse a concrete CPU CLIP instance while the Talk2DINO weights load.
+        preloaded_clip = clip.load(clip_model_name, device="cpu")
+        original_clip_load = clip.load
+
+        def patched_clip_load(name, device="meta", *args, **kwargs):
+            if name == clip_model_name:
+                return preloaded_clip
+            return original_clip_load(name, device="cpu", *args, **kwargs)
+
+        clip.load = patched_clip_load
+        try:
+            self.model = talk2dino_cls.from_pretrained(
+                local_model_dir,
+                low_cpu_mem_usage=False,
+            )
+        finally:
+            clip.load = original_clip_load
+
+        self.model = self.model.to(self.device).eval()
+        # The remote-code model owns its own image preprocessing pipeline and expects PIL input.
+        self.transform = None
 
     @torch.no_grad()
     def encode_text(self, prompts: List[str]) -> torch.Tensor:
@@ -87,8 +132,8 @@ class Talk2DINOBackend(VisionLanguageBackend):
         return F.normalize(embeddings, dim=-1)
 
     @torch.no_grad()
-    def encode_image_to_feature_map(self, img_tensor: torch.Tensor) -> torch.Tensor:
-        image_embed = self.model.encode_image(img_tensor.to(self.device))
+    def encode_image_to_feature_map(self, image_input) -> torch.Tensor:
+        image_embed = self.model.encode_image(image_input)
         if not isinstance(image_embed, torch.Tensor):
             image_embed = torch.as_tensor(image_embed)
         image_embed = image_embed.to(self.device)

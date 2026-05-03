@@ -21,11 +21,11 @@ def main():
     )
 
     image = Image.open(args.image_path).convert("RGB")
-    img_tensor = backend.transform(image).unsqueeze(0).to(args.device)
+    image_input = backend.transform(image).unsqueeze(0).to(args.device) if backend.transform else image
 
     with torch.no_grad():
         text_emb = backend.encode_text([args.prompt])
-        feature_map = backend.encode_image_to_feature_map(img_tensor)
+        feature_map = backend.encode_image_to_feature_map(image_input)
 
     print(f"text_emb shape: {tuple(text_emb.shape)}")
     print(f"feature_map shape: {tuple(feature_map.shape)}")

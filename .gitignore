@@ -7,4 +7,6 @@ __pycache__
 /results
 .vscode
 .DS_Store
-work_logs
+work_logs
+*.jsonl
+scratch/hf_models/
