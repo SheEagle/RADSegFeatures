@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from elasticsearch import Elasticsearch
-from matplotlib import patches
 from PIL import Image
 from redis import Redis
 from vl_backends import create_backend
@@ -183,29 +182,26 @@ return numer / denom;
     def make_overlay(self, image, cluster_id_map, cluster_id):
         mask = (cluster_id_map == cluster_id).astype(np.uint8)
         if mask.sum() == 0:
-            return np.array(image), None, None
+            return np.array(image), None
 
         image_np = np.array(image)
         mask_resized = cv2.resize(mask, (image.width, image.height), interpolation=cv2.INTER_NEAREST)
 
-        contours, _ = cv2.findContours(mask_resized, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        bbox = None
-        if contours:
-            all_points = np.concatenate(contours, axis=0)
-            x, y, w, h = cv2.boundingRect(all_points)
-            bbox = (x, y, w, h)
-
         overlay = image_np.copy().astype(np.float32)
-        overlay_color = np.zeros_like(overlay)
-        overlay_color[:, :, 0] = 255
-        overlay_color[:, :, 1] = 64
-        alpha = 0.4
+        alpha = 0.45
+        heat = cv2.GaussianBlur(mask_resized.astype(np.float32), (0, 0), sigmaX=8, sigmaY=8)
+        if heat.max() > 0:
+            heat = heat / heat.max()
+        heat_uint8 = np.clip(heat * 255.0, 0, 255).astype(np.uint8)
+        heatmap_bgr = cv2.applyColorMap(heat_uint8, cv2.COLORMAP_JET)
+        heatmap_rgb = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+
         overlay[mask_resized.astype(bool)] = (
             overlay[mask_resized.astype(bool)] * (1.0 - alpha)
-            + overlay_color[mask_resized.astype(bool)] * alpha
+            + heatmap_rgb[mask_resized.astype(bool)] * alpha
         )
         overlay = overlay.astype(np.uint8)
-        return overlay, mask_resized, bbox
+        return overlay, mask_resized
 
     def resolve_image_path(self, image_id):
         image_path = os.path.join(self.image_root, image_id)
@@ -231,13 +227,9 @@ return numer / denom;
             image_path = self.resolve_image_path(result["image_id"])
             image = Image.open(image_path).convert("RGB")
             cluster_id_map = self.load_feature_map(result["image_id"])
-            overlay, _, bbox = self.make_overlay(image, cluster_id_map, result["cluster_id"])
+            overlay, _ = self.make_overlay(image, cluster_id_map, result["cluster_id"])
 
             ax.imshow(overlay)
-            if bbox is not None:
-                x, y, w, h = bbox
-                rect = patches.Rectangle((x, y), w, h, linewidth=2.5, edgecolor="lime", facecolor="none")
-                ax.add_patch(rect)
 
             neg_text = ", ".join(negative_prompts)
             ax.set_title(
@@ -264,12 +256,12 @@ def infer_vector_field(index_name):
 
 def main():
     parser = argparse.ArgumentParser(description="Test Elasticsearch text search with Redis-backed feature-map visualization.")
-    parser.add_argument("query", type=str, help="Positive text query")
+    parser.add_argument("query", type=str, default="river",help="Positive text query")
     parser.add_argument("--negative_text", type=str, default="background", help="Comma-separated negative prompts")
     parser.add_argument("--top_k", type=int, default=6, help="Number of unique images to visualize")
     parser.add_argument("--candidate_k", type=int, default=120, help="Number of candidate clusters retrieved from ES before direct negative scoring")
-    parser.add_argument("--temperature", type=float, default=80.0, help="Softmax temperature for reranking")
-    parser.add_argument("--es_host", type=str, default="http://localhost:9200", help="Elasticsearch host")
+    parser.add_argument("--temperature", type=float, default=20.0, help="Softmax temperature for reranking")
+    parser.add_argument("--es_host", type=str, default="http://localhost:9201", help="Elasticsearch host")
     parser.add_argument("--es_index", type=str, default="radseg_images", help="Elasticsearch index name")
     parser.add_argument("--redis_url", type=str, default="redis://localhost:6379/0", help="Redis connection URL")
     parser.add_argument("--redis_key_prefix", type=str, default="fm", help="Redis key prefix used for feature maps")
@@ -284,7 +276,7 @@ def main():
     parser.add_argument("--model_version", type=str, default="c-radio_v4-h", help="RADSeg model version")
     parser.add_argument("--lang_model", type=str, default="siglip2-g", help="RADSeg language model")
     parser.add_argument("--model_id", type=str, default="lorebianchi98/Talk2DINO-ViTL", help="Talk2DINO model id")
-    parser.add_argument("--device", type=str, default="cpu", help="Device for text encoding")
+    parser.add_argument("--device", type=str, default="cuda", help="Device for text encoding")
     parser.add_argument("--vector_field", type=str, default=None, help="Override ES vector field name")
     parser.add_argument("--output_path", type=str, default=None, help="Optional path to save the matplotlib figure")
     args = parser.parse_args()

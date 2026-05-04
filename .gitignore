@@ -9,4 +9,5 @@ __pycache__
 .DS_Store
 work_logs
 *.jsonl
+*.json
 scratch/hf_models/
