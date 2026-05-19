@@ -10,7 +10,16 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
 from huggingface_hub import snapshot_download
+from PIL import Image
 from transformers import AutoModel
+from transformers.modeling_utils import PreTrainedModel
+
+from demo_talk2dino_v2_single_image import (
+    build_hr_image_tensor,
+    extract_lr_feature_map,
+    patch_clip_loading,
+    patch_talk2dino_loading,
+)
 
 
 class VisionLanguageBackend:
@@ -186,12 +195,77 @@ class Talk2DINOBackend(VisionLanguageBackend):
         return F.normalize(feature_map, dim=1)
 
 
+class Talk2DINOAnyUpBackend(VisionLanguageBackend):
+    def __init__(
+        self,
+        model_id="lorebianchi98/Talk2DINO-ViTB",
+        device="cuda",
+        anyup_entrypoint="anyup_multi_backbone",
+        anyup_use_natten=False,
+        anyup_q_chunk_size=None,
+        anyup_output_size=(384, 384),
+    ):
+        super().__init__(device=device)
+        print(f"Loading Talk2DINO + AnyUp model {model_id}...")
+        original_patch = patch_talk2dino_loading()
+        original_clip_patch = patch_clip_loading(model_id)
+        try:
+            self.model = AutoModel.from_pretrained(model_id, trust_remote_code=True).to(self.device).eval()
+        finally:
+            PreTrainedModel.mark_tied_weights_as_initialized = original_patch
+            clip.load = original_clip_patch
+
+        print(f"Loading AnyUp: {anyup_entrypoint} (use_natten={anyup_use_natten})")
+        self.upsampler = torch.hub.load(
+            "wimmerth/anyup",
+            anyup_entrypoint,
+            use_natten=anyup_use_natten,
+        ).to(self.device).eval()
+
+        self.anyup_q_chunk_size = anyup_q_chunk_size
+        self.anyup_output_size = tuple(anyup_output_size) if anyup_output_size is not None else None
+        self.transform = None
+
+    @torch.no_grad()
+    def encode_text(self, prompts: List[str]) -> torch.Tensor:
+        outputs = []
+        for prompt in prompts:
+            text_embed = self.model.encode_text(prompt)
+            if not isinstance(text_embed, torch.Tensor):
+                text_embed = torch.as_tensor(text_embed)
+            if text_embed.dim() == 1:
+                text_embed = text_embed.unsqueeze(0)
+            outputs.append(text_embed.to(self.device))
+        embeddings = torch.cat(outputs, dim=0)
+        return F.normalize(embeddings, dim=-1)
+
+    @torch.no_grad()
+    def encode_image_to_feature_map(self, image_input) -> torch.Tensor:
+        if not isinstance(image_input, Image.Image):
+            raise ValueError("Talk2DINOAnyUpBackend expects a PIL.Image input.")
+
+        lr_features = extract_lr_feature_map(self.model, image_input, self.device)
+        hr_image = build_hr_image_tensor(image_input, self.device)
+        kwargs = {}
+        if self.anyup_q_chunk_size is not None:
+            kwargs["q_chunk_size"] = self.anyup_q_chunk_size
+        if self.anyup_output_size is not None:
+            kwargs["output_size"] = self.anyup_output_size
+        hr_features = self.upsampler(hr_image, lr_features, **kwargs)
+        hr_features = hr_features.to(self.device)
+        return F.normalize(hr_features, dim=1)
+
+
 def create_backend(
     backend_name,
     device="cuda",
     model_version="c-radio_v4-h",
     lang_model="siglip2-g",
     model_id=None,
+    anyup_entrypoint="anyup_multi_backbone",
+    anyup_use_natten=False,
+    anyup_q_chunk_size=None,
+    anyup_output_size=(384, 384),
 ):
     backend_name = backend_name.lower()
     if backend_name == "radseg":
@@ -202,4 +276,14 @@ def create_backend(
     if backend_name == "talk2dino":
         resolved_model_id = model_id or "lorebianchi98/Talk2DINO-ViTL"
         return Talk2DINOBackend(model_id=resolved_model_id, device=device)
+    if backend_name == "talk2dino_anyup":
+        resolved_model_id = model_id or "lorebianchi98/Talk2DINO-ViTB"
+        return Talk2DINOAnyUpBackend(
+            model_id=resolved_model_id,
+            device=device,
+            anyup_entrypoint=anyup_entrypoint,
+            anyup_use_natten=anyup_use_natten,
+            anyup_q_chunk_size=anyup_q_chunk_size,
+            anyup_output_size=anyup_output_size,
+        )
     raise ValueError(f"Unsupported backend '{backend_name}'")

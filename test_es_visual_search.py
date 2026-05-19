@@ -42,6 +42,23 @@ GENERAL_QUERY_TERMS = {
     "water",
 }
 
+GENERAL_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "in",
+    "near",
+    "of",
+    "on",
+    "over",
+    "the",
+    "under",
+    "with",
+}
+
+GENERAL_QUERY_MIN_VISUAL_TERMS = 2
+
 METADATA_SEARCH_FIELDS = [
     "landmarks_identified",
     "final_place",
@@ -100,7 +117,12 @@ class MetadataQueryRouter:
         scored = self._score_metadata_matches(query_text)
         candidates = [item for item in scored if item["score"] >= 3.0]
         query_tokens = set(tokenize(query_text))
-        is_generic = query_tokens and query_tokens.issubset(GENERAL_QUERY_TERMS)
+        content_tokens = query_tokens - GENERAL_QUERY_STOPWORDS
+        visual_token_count = len(content_tokens & GENERAL_QUERY_TERMS)
+        is_generic = bool(content_tokens) and (
+            content_tokens.issubset(GENERAL_QUERY_TERMS)
+            or visual_token_count >= GENERAL_QUERY_MIN_VISUAL_TERMS
+        )
         should_filter = mode == "force" or (bool(candidates) and not is_generic)
 
         if not should_filter:
@@ -329,8 +351,25 @@ return numer / denom;
         best_per_image = {}
         for item in scored_hits:
             image_id = item["image_id"]
-            if image_id not in best_per_image or item["score"] > best_per_image[image_id]["score"]:
-                best_per_image[image_id] = item
+            if image_id not in best_per_image:
+                best_per_image[image_id] = {
+                    "image_id": image_id,
+                    "score": item["score"],
+                    "cluster_hits": [item],
+                    "final_place": item.get("final_place", ""),
+                    "landmarks_identified": item.get("landmarks_identified", ""),
+                }
+            else:
+                best_per_image[image_id]["score"] = max(best_per_image[image_id]["score"], item["score"])
+                best_per_image[image_id]["cluster_hits"].append(item)
+
+        for payload in best_per_image.values():
+            dedup = {}
+            for hit in payload["cluster_hits"]:
+                cluster_id = int(hit["cluster_id"])
+                if cluster_id not in dedup or hit["score"] > dedup[cluster_id]["score"]:
+                    dedup[cluster_id] = hit
+            payload["cluster_hits"] = sorted(dedup.values(), key=lambda hit: hit["score"], reverse=True)
 
         results = sorted(best_per_image.values(), key=lambda item: item["score"], reverse=True)
         return results[:top_k], negative_prompts
@@ -353,33 +392,35 @@ return numer / denom;
         decoded = zlib.decompress(data)
         return np.frombuffer(decoded, dtype=np.dtype(dtype_name)).reshape(height, width)
 
-    @staticmethod
-    def cluster_color(cluster_id, total_clusters):
-        cmap = plt.get_cmap("tab20", max(total_clusters, 1))
-        return np.array(cmap(cluster_id / max(total_clusters - 1, 1))[:3], dtype=np.float32)
-
-    def make_overlay(self, image, cluster_id_map, cluster_ids):
-        if isinstance(cluster_ids, int):
-            cluster_ids = [cluster_ids]
-
+    def make_similarity_overlay(self, image, cluster_id_map, cluster_items):
         image_np = np.asarray(image).astype(np.float32) / 255.0
-        overlay = image_np.copy()
-        total_clusters = int(cluster_id_map.max()) + 1
+        score_map = np.zeros_like(cluster_id_map, dtype=np.float32)
+        if not cluster_items:
+            return image_np, score_map
 
-        for cluster_id in cluster_ids:
-            mask = (cluster_id_map == cluster_id).astype(np.uint8)
-            if mask.sum() == 0:
-                continue
+        cluster_scores = {}
+        for item in cluster_items:
+            cluster_id = int(item["cluster_id"])
+            cluster_scores[cluster_id] = max(cluster_scores.get(cluster_id, 0.0), float(item["score"]))
 
-            mask_resized = cv2.resize(mask, (image.width, image.height), interpolation=cv2.INTER_NEAREST).astype(bool)
-            color = self.cluster_color(int(cluster_id), total_clusters)
-            color_img = np.broadcast_to(color.reshape(1, 1, 3), image_np.shape)
-            overlay[mask_resized] = overlay[mask_resized] * 0.45 + color_img[mask_resized] * 0.55
+        for cluster_id, score in cluster_scores.items():
+            score_map[cluster_id_map == cluster_id] = score
 
-            edges = cv2.Canny((mask_resized.astype(np.uint8) * 255), 50, 150) > 0
-            overlay[edges] = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        heatmap = cv2.resize(score_map, (image.width, image.height), interpolation=cv2.INTER_LINEAR)
+        if np.count_nonzero(heatmap) > 0:
+            positive = heatmap[heatmap > 0]
+            low = float(np.percentile(positive, 5))
+            high = float(np.percentile(positive, 95))
+            if high <= low:
+                low = float(positive.min())
+                high = float(positive.max())
+            heatmap = np.clip((heatmap - low) / max(high - low, 1e-8), 0.0, 1.0)
+            heatmap = cv2.GaussianBlur(heatmap, (0, 0), sigmaX=8, sigmaY=8)
 
-        return np.clip(overlay, 0.0, 1.0)
+        colored = plt.get_cmap("magma")(heatmap)[..., :3].astype(np.float32)
+        alpha = (heatmap ** 0.8) * 0.75
+        overlay = image_np * (1.0 - alpha[..., None]) + colored * alpha[..., None]
+        return np.clip(overlay, 0.0, 1.0), heatmap
 
     def resolve_image_path(self, image_id):
         image_path = os.path.join(self.image_root, image_id)
@@ -396,9 +437,9 @@ return numer / denom;
             grouped = {}
             for result in results:
                 grouped.setdefault(result["image_id"], []).append(result)
-            display_items = list(grouped.items())
+            display_items = [(image_id, items, max(item["score"] for item in items)) for image_id, items in grouped.items()]
         else:
-            display_items = [(result["image_id"], [result]) for result in results]
+            display_items = [(result["image_id"], result["cluster_hits"], result["score"]) for result in results]
 
         cols = min(3, len(display_items))
         rows = math.ceil(len(display_items) / cols)
@@ -408,13 +449,12 @@ return numer / denom;
         for ax in axes.flat:
             ax.axis("off")
 
-        for idx, (image_id, image_results) in enumerate(display_items):
+        for idx, (image_id, image_results, image_score) in enumerate(display_items):
             ax = axes[idx // cols, idx % cols]
             image_path = self.resolve_image_path(image_id)
             image = Image.open(image_path).convert("RGB")
             cluster_id_map = self.load_feature_map(image_id)
-            cluster_ids = [item["cluster_id"] for item in image_results]
-            overlay = self.make_overlay(image, cluster_id_map, cluster_ids)
+            overlay, _ = self.make_similarity_overlay(image, cluster_id_map, image_results)
 
             ax.imshow(overlay)
             neg_text = ", ".join(negative_prompts)
@@ -423,7 +463,7 @@ return numer / denom;
             )
             ax.set_title(
                 f"{image_id}\n"
-                f"clusters={cluster_text}\n"
+                f"image_score={image_score:.4f} | clusters={cluster_text}\n"
                 f"query='{query_text}' vs [{neg_text}]",
                 fontsize=11,
             )
@@ -516,11 +556,20 @@ def main():
 
     print(f"Top {len(results)} results for '{args.query}':")
     for rank, result in enumerate(results, start=1):
-        print(
-            f"{rank}. image={result['image_id']} cluster={result['cluster_id']} "
-            f"score={result['score']:.4f} raw_es={result['raw_score']:.4f} "
-            f"place={result.get('final_place', '')}"
-        )
+        if args.result_mode == "cluster":
+            print(
+                f"{rank}. image={result['image_id']} cluster={result['cluster_id']} "
+                f"score={result['score']:.4f} raw_es={result['raw_score']:.4f} "
+                f"place={result.get('final_place', '')}"
+            )
+        else:
+            cluster_text = ", ".join(
+                f"{item['cluster_id']}:{item['score']:.4f}" for item in result.get("cluster_hits", [])[:6]
+            )
+            print(
+                f"{rank}. image={result['image_id']} score={result['score']:.4f} "
+                f"clusters=[{cluster_text}] place={result.get('final_place', '')}"
+            )
 
     visualizer.visualize_results(
         results=results,

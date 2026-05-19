@@ -138,6 +138,10 @@ class FeatureBatchExtractor:
         model_version="c-radio_v4-h",
         lang_model="siglip2-g",
         model_id=None,
+        anyup_entrypoint="anyup_multi_backbone",
+        anyup_use_natten=False,
+        anyup_q_chunk_size=None,
+        anyup_output_size=(384, 384),
     ):
         self.device = device
         self.num_clusters = num_clusters
@@ -151,6 +155,10 @@ class FeatureBatchExtractor:
             model_version=model_version,
             lang_model=lang_model,
             model_id=model_id,
+            anyup_entrypoint=anyup_entrypoint,
+            anyup_use_natten=anyup_use_natten,
+            anyup_q_chunk_size=anyup_q_chunk_size,
+            anyup_output_size=anyup_output_size,
         )
         self.transform = self.backend.transform
 
@@ -219,7 +227,7 @@ if __name__ == "__main__":
         "--backend",
         type=str,
         default="tips",
-        choices=["tips", "talk2dino", "radseg"],
+        choices=["tips", "talk2dino", "talk2dino_anyup", "radseg"],
         help="Vision-language backend used to produce dense features",
     )
     parser.add_argument(
@@ -250,6 +258,17 @@ if __name__ == "__main__":
     parser.add_argument("--model_version", type=str, default="c-radio_v4-h")
     parser.add_argument("--lang_model", type=str, default="siglip2-g")
     parser.add_argument("--model_id", type=str, default=None)
+    parser.add_argument("--anyup_entrypoint", type=str, default="anyup_multi_backbone")
+    parser.add_argument("--anyup_use_natten", action="store_true")
+    parser.add_argument("--anyup_q_chunk_size", type=int, default=None)
+    parser.add_argument(
+        "--anyup_output_size",
+        nargs=2,
+        type=int,
+        default=[384, 384],
+        metavar=("WIDTH", "HEIGHT"),
+        help="AnyUp output size when backend=talk2dino_anyup",
+    )
     parser.add_argument("--device", type=str, default="cuda")
 
     args = parser.parse_args()
@@ -263,6 +282,10 @@ if __name__ == "__main__":
         merge_similarity=args.merge_similarity,
         model_id=args.model_id,
         device=args.device,
+        anyup_entrypoint=args.anyup_entrypoint,
+        anyup_use_natten=args.anyup_use_natten,
+        anyup_q_chunk_size=args.anyup_q_chunk_size,
+        anyup_output_size=tuple(args.anyup_output_size) if args.anyup_output_size is not None else None,
     )
 
     if not os.path.exists(args.input_dir):

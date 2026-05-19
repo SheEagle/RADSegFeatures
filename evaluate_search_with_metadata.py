@@ -1,4 +1,5 @@
 import argparse
+import html
 import json
 import math
 import os
@@ -158,6 +159,16 @@ def ndcg_at_k(items, relevant_set, k):
 def slugify_for_filename(text):
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", text).strip("_").lower()
     return slug or "benchmark"
+
+
+def query_family(benchmark_type):
+    return "general" if benchmark_type == "concept" else "specific"
+
+
+def escape_html(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return html.escape(str(value))
 
 
 def extract_landmark_names(value):
@@ -331,12 +342,20 @@ def prepare_metadata(metadata_csv, indexed_image_ids):
     return df
 
 
-def build_structured_queries(df, min_city_count, min_place_count, min_landmark_count, top_n_per_type):
+def build_structured_queries(
+    df,
+    min_city_count,
+    min_place_count,
+    min_landmark_count,
+    top_n_city,
+    top_n_place,
+    top_n_landmark,
+):
     query_specs = []
 
     city_counts = df["final_city_clean"].value_counts()
     city_counts = city_counts[city_counts.index.str.strip() != ""]
-    for value, count in city_counts[city_counts >= min_city_count].head(top_n_per_type).items():
+    for value, count in city_counts[city_counts >= min_city_count].head(top_n_city).items():
         relevant = set(df.loc[df["final_city_clean"] == value, "image_filename"])
         query_specs.append(
             {
@@ -350,7 +369,7 @@ def build_structured_queries(df, min_city_count, min_place_count, min_landmark_c
 
     place_counts = df["final_place_clean"].value_counts()
     place_counts = place_counts[place_counts.index.str.strip() != ""]
-    for value, count in place_counts[place_counts >= min_place_count].head(top_n_per_type).items():
+    for value, count in place_counts[place_counts >= min_place_count].head(top_n_place).items():
         relevant = set(df.loc[df["final_place_clean"] == value, "image_filename"])
         query_specs.append(
             {
@@ -384,7 +403,7 @@ def build_structured_queries(df, min_city_count, min_place_count, min_landmark_c
                 "support": len(landmark_to_images[landmark_name]),
             }
         )
-        if sum(1 for item in query_specs if item["benchmark_type"] == "landmark") >= top_n_per_type:
+        if sum(1 for item in query_specs if item["benchmark_type"] == "landmark") >= top_n_landmark:
             break
 
     return query_specs
@@ -499,6 +518,7 @@ def export_ground_truth(report_dir, query_specs, metadata_df):
             gt_rows.append(
                 {
                     "benchmark_type": query_spec["benchmark_type"],
+                    "query_family": query_family(query_spec["benchmark_type"]),
                     "query": query_spec["query"],
                     "label": query_spec["label"],
                     "support": query_spec["support"],
@@ -513,6 +533,7 @@ def export_ground_truth(report_dir, query_specs, metadata_df):
         exported_queries.append(
             {
                 "benchmark_type": query_spec["benchmark_type"],
+                "query_family": query_family(query_spec["benchmark_type"]),
                 "query": query_spec["query"],
                 "label": query_spec["label"],
                 "support": query_spec["support"],
@@ -528,9 +549,10 @@ def export_ground_truth(report_dir, query_specs, metadata_df):
     return gt_json_path, gt_csv_path
 
 
-def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, image_hits_df, cluster_hits_df, visualizations_dir):
+def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, image_hits_df, cluster_hits_df, visualizations_dir, config=None):
     md_path = os.path.join(report_dir, "query_browser_report.md")
     html_path = os.path.join(report_dir, "query_browser_report.html")
+    config = config or {}
 
     image_lookup = {
         (row["benchmark_type"], row["query"]): row
@@ -541,7 +563,44 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
         for _, row in cluster_df.iterrows()
     }
 
-    query_keys = sorted(image_lookup.keys(), key=lambda item: (item[0], item[1].lower()))
+    query_keys = sorted(image_lookup.keys(), key=lambda item: (query_family(item[0]), item[0], item[1].lower()))
+
+    overview_rows = []
+    for family in ["general", "specific"]:
+        image_subset = image_df[image_df["query_family"] == family] if "query_family" in image_df.columns else image_df[image_df["benchmark_type"].map(query_family) == family]
+        cluster_subset = cluster_df[cluster_df["query_family"] == family] if "query_family" in cluster_df.columns else cluster_df[cluster_df["benchmark_type"].map(query_family) == family]
+        if image_subset.empty:
+            continue
+        overview_rows.append(
+            {
+                "family": family,
+                "queries": len(image_subset),
+                "image_recall@5": image_subset["recall@5"].mean(),
+                "image_recall@10": image_subset["recall@10"].mean(),
+                "image_mrr": image_subset["mrr"].mean(),
+                "image_ndcg@10": image_subset["ndcg@10"].mean(),
+                "cluster_p@10": cluster_subset["cluster_precision@10"].mean(),
+                "cluster_image_recall@10": cluster_subset["image_recall_from_clusters@10"].mean(),
+                "cluster_mrr": cluster_subset["cluster_mrr"].mean(),
+            }
+        )
+
+    benchmark_rows = []
+    for benchmark_type in sorted(image_df["benchmark_type"].unique()):
+        image_subset = image_df[image_df["benchmark_type"] == benchmark_type]
+        cluster_subset = cluster_df[cluster_df["benchmark_type"] == benchmark_type]
+        benchmark_rows.append(
+            {
+                "query_type": benchmark_type,
+                "family": query_family(benchmark_type),
+                "queries": len(image_subset),
+                "image_recall@5": image_subset["recall@5"].mean(),
+                "image_recall@10": image_subset["recall@10"].mean(),
+                "image_mrr": image_subset["mrr"].mean(),
+                "cluster_p@10": cluster_subset["cluster_precision@10"].mean(),
+                "cluster_image_recall@10": cluster_subset["image_recall_from_clusters@10"].mean(),
+            }
+        )
 
     md_lines = ["# Query Browser Report", ""]
     html_parts = [
@@ -549,9 +608,15 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
         "<html><head><meta charset='utf-8'>",
         "<title>Query Browser Report</title>",
         "<style>",
-        "body{font-family:Arial,sans-serif;margin:24px;line-height:1.45;}",
+        "body{font-family:Arial,sans-serif;margin:24px;line-height:1.45;background:#faf9f6;color:#222;}",
         "h1,h2,h3{margin-top:1.2em;}",
-        ".card{border:1px solid #ddd;border-radius:10px;padding:16px;margin:20px 0;}",
+        ".hero{background:#1f2937;color:white;border-radius:16px;padding:22px 26px;margin-bottom:18px;}",
+        ".hero code{background:rgba(255,255,255,.15);color:white;}",
+        ".section{margin-top:34px;padding-top:8px;border-top:3px solid #ddd;}",
+        ".card{background:white;border:1px solid #ddd;border-radius:14px;padding:16px;margin:20px 0;box-shadow:0 1px 5px rgba(0,0,0,.04);}",
+        ".tag{display:inline-block;border-radius:999px;padding:3px 10px;margin-right:6px;font-size:12px;background:#eef2ff;color:#3730a3;}",
+        ".tag.general{background:#ecfdf5;color:#047857;}",
+        ".tag.specific{background:#fff7ed;color:#c2410c;}",
         ".metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 16px;margin:12px 0;}",
         ".metric{background:#f7f7f7;padding:8px 10px;border-radius:8px;}",
         "table{border-collapse:collapse;width:100%;margin:10px 0 16px 0;}",
@@ -559,11 +624,72 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
         "th{background:#f0f0f0;}",
         "img{max-width:100%;height:auto;border:1px solid #ddd;border-radius:8px;}",
         "code{background:#f4f4f4;padding:1px 4px;border-radius:4px;}",
+        ".toc a{margin-right:12px;}",
         "</style></head><body>",
-        "<h1>Query Browser Report</h1>",
+        "<div class='hero'>",
+        "<h1>Search Evaluation Browser</h1>",
+        "<p>This report keeps the original metadata-derived benchmark logic, plus separates user-facing <strong>general visual queries</strong> from <strong>specific place/landmark queries</strong>.</p>",
+        "<p>",
+        f"Backend: <code>{escape_html(config.get('backend', ''))}</code> ",
+        f"Index: <code>{escape_html(config.get('es_index', ''))}</code> ",
+        f"Candidate K: <code>{escape_html(config.get('candidate_k', ''))}</code> ",
+        f"Temperature: <code>{escape_html(config.get('temperature', ''))}</code>",
+        "</p>",
+        "</div>",
+        "<div class='toc'><strong>Jump:</strong> <a href='#overview'>Overview</a><a href='#general'>General queries</a><a href='#specific'>Specific queries</a><a href='#logic'>Benchmark logic</a></div>",
     ]
 
+    def _table_html(df, cols, title):
+        html_bits = [f"<h3>{escape_html(title)}</h3>"]
+        if df.empty:
+            html_bits.append("<p><em>None</em></p>")
+            return "".join(html_bits)
+        html_bits.append("<table><thead><tr>")
+        for col in cols:
+            html_bits.append(f"<th>{escape_html(col)}</th>")
+        html_bits.append("</tr></thead><tbody>")
+        for _, row in df.iterrows():
+            html_bits.append("<tr>")
+            for col in cols:
+                value = row[col]
+                if isinstance(value, float):
+                    display = f"{value:.4f}" if not pd.isna(value) else ""
+                else:
+                    display = str(value)
+                html_bits.append(f"<td>{escape_html(display)}</td>")
+            html_bits.append("</tr>")
+        html_bits.append("</tbody></table>")
+        return "".join(html_bits)
+
+    html_parts.append("<section id='overview' class='section'><h2>Evaluation overview</h2>")
+    html_parts.append("<p><strong>General queries</strong> are broad visual concepts such as river, bridge, church, tower. <strong>Specific queries</strong> are city/place/landmark-style queries where metadata is a meaningful candidate signal.</p>")
+    html_parts.append(
+        _table_html(
+            pd.DataFrame(overview_rows),
+            ["family", "queries", "image_recall@5", "image_recall@10", "image_mrr", "image_ndcg@10", "cluster_p@10", "cluster_image_recall@10", "cluster_mrr"],
+            "Macro metrics by query family",
+        )
+    )
+    html_parts.append(
+        _table_html(
+            pd.DataFrame(benchmark_rows),
+            ["query_type", "family", "queries", "image_recall@5", "image_recall@10", "image_mrr", "cluster_p@10", "cluster_image_recall@10"],
+            "Macro metrics by benchmark type",
+        )
+    )
+    html_parts.append("</section>")
+
+    current_family = None
+
     for benchmark_type, query in query_keys:
+        family = query_family(benchmark_type)
+        if family != current_family:
+            if current_family is not None:
+                html_parts.append("</section>")
+            current_family = family
+            title = "General queries" if family == "general" else "Specific place and landmark queries"
+            html_parts.append(f"<section id='{family}' class='section'><h2>{title}</h2>")
+
         img_row = image_lookup[(benchmark_type, query)]
         clu_row = cluster_lookup[(benchmark_type, query)]
 
@@ -578,11 +704,13 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
         query_slug = slugify_for_filename(query)
         vis_rel = None
         if visualizations_dir:
-            vis_path = os.path.join(visualizations_dir, benchmark_type, f"{query_slug}_heatmap.png")
-            if os.path.exists(vis_path):
-                vis_rel = os.path.relpath(vis_path, report_dir).replace("\\", "/")
+            for suffix in ["heatmap", "cluster_mode"]:
+                vis_path = os.path.join(visualizations_dir, benchmark_type, f"{query_slug}_{suffix}.png")
+                if os.path.exists(vis_path):
+                    vis_rel = os.path.relpath(vis_path, report_dir).replace("\\", "/")
+                    break
 
-        md_lines.append(f"## {benchmark_type}: `{query}`")
+        md_lines.append(f"## {family} / {benchmark_type}: `{query}`")
         md_lines.append("")
         md_lines.append(f"- Support: `{int(img_row['support'])}`")
         md_lines.append(f"- Image metrics: `R@1={img_row['recall@1']:.4f}`, `R@5={img_row['recall@5']:.4f}`, `R@10={img_row['recall@10']:.4f}`, `MRR={img_row['mrr']:.4f}`, `nDCG@10={img_row['ndcg@10']:.4f}`")
@@ -593,7 +721,7 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
             md_lines.append(f"![{query}]({vis_rel})")
         md_lines.append("")
 
-        html_parts.append(f"<div class='card'><h2>{benchmark_type}: <code>{query}</code></h2>")
+        html_parts.append(f"<div class='card'><h2><span class='tag {family}'>{family}</span><span class='tag'>{benchmark_type}</span><code>{escape_html(query)}</code></h2>")
         html_parts.append(f"<p><strong>Support:</strong> {int(img_row['support'])}</p>")
         html_parts.append("<div class='metrics'>")
         for label, value in [
@@ -607,35 +735,10 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
             ("ImageRecallFromClusters@10", clu_row["image_recall_from_clusters@10"]),
             ("Cluster MRR", clu_row["cluster_mrr"]),
         ]:
-            html_parts.append(f"<div class='metric'><strong>{label}</strong><br>{float(value):.4f}</div>")
+            html_parts.append(f"<div class='metric'><strong>{escape_html(label)}</strong><br>{float(value):.4f}</div>")
         html_parts.append("</div>")
         if vis_rel:
-            html_parts.append(f"<h3>Search visualization</h3><img src='{vis_rel}' alt='{query}'>")
-
-        def _table_html(df, cols, title):
-            html = [f"<h3>{title}</h3>"]
-            if df.empty:
-                html.append("<p><em>None</em></p>")
-                return "".join(html)
-            html.append("<table><thead><tr>")
-            for col in cols:
-                html.append(f"<th>{col}</th>")
-            html.append("</tr></thead><tbody>")
-            for _, row in df.iterrows():
-                html.append("<tr>")
-                for col in cols:
-                    value = row[col]
-                    if isinstance(value, float):
-                        if col == "score":
-                            display = f"{value:.4f}"
-                        else:
-                            display = f"{value:.4f}" if not pd.isna(value) else ""
-                    else:
-                        display = str(value)
-                    html.append(f"<td>{display}</td>")
-                html.append("</tr>")
-            html.append("</tbody></table>")
-            return "".join(html)
+            html_parts.append(f"<h3>Search visualization</h3><img src='{escape_html(vis_rel)}' alt='{escape_html(query)}'>")
 
         html_parts.append(
             _table_html(
@@ -663,6 +766,19 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
         )
         html_parts.append("</div>")
 
+    if current_family is not None:
+        html_parts.append("</section>")
+
+    html_parts.append(
+        "<section id='logic' class='section'><h2>Benchmark logic kept in this report</h2>"
+        "<ul>"
+        "<li><strong>General queries</strong>: metadata weak labels are created from description/transcription/landmark/place text using concept patterns such as bridge, river, water, castle, church, tower, street, square, park.</li>"
+        "<li><strong>Specific queries</strong>: place and landmark queries are generated from metadata frequency counts and evaluated against matching image IDs, with landmark-heavy emphasis and city-level queries disabled by default.</li>"
+        "<li><strong>Image-level evaluation</strong>: each image is ranked by its best matching cluster; metrics include Recall@1/5/10, MRR, AP@10, and nDCG@10.</li>"
+        "<li><strong>Cluster-level analysis</strong>: clusters are ranked directly; metrics include cluster precision and how many relevant images appear through top clusters.</li>"
+        "<li><strong>Visual inspection</strong>: every rendered query keeps the original image-card visualization with highlighted hit clusters, matching the intended product flow: search images first, then jump to the map POI.</li>"
+        "</ul></section>"
+    )
     html_parts.append("</body></html>")
 
     with open(md_path, "w", encoding="utf-8") as handle:
@@ -742,8 +858,10 @@ def main():
     parser.add_argument("--cluster_top_k", type=int, default=50)
     parser.add_argument("--min_city_count", type=int, default=10)
     parser.add_argument("--min_place_count", type=int, default=5)
-    parser.add_argument("--min_landmark_count", type=int, default=5)
-    parser.add_argument("--top_n_per_type", type=int, default=10)
+    parser.add_argument("--min_landmark_count", type=int, default=3)
+    parser.add_argument("--top_n_city", type=int, default=0)
+    parser.add_argument("--top_n_place", type=int, default=6)
+    parser.add_argument("--top_n_landmark", type=int, default=20)
     parser.add_argument("--report_dir", default=None)
     parser.add_argument("--redis_url", default="redis://localhost:6379/0")
     parser.add_argument("--redis_key_prefix", default="fm")
@@ -777,7 +895,9 @@ def main():
         min_city_count=args.min_city_count,
         min_place_count=args.min_place_count,
         min_landmark_count=args.min_landmark_count,
-        top_n_per_type=args.top_n_per_type,
+        top_n_city=args.top_n_city,
+        top_n_place=args.top_n_place,
+        top_n_landmark=args.top_n_landmark,
     )
     concept_queries = build_concept_queries(metadata_df)
     all_queries = [query for query in structured_queries + concept_queries if query["support"] > 0]
@@ -835,6 +955,7 @@ def main():
         image_rows.append(
             {
                 "benchmark_type": query_spec["benchmark_type"],
+                "query_family": query_family(query_spec["benchmark_type"]),
                 "query": query_spec["query"],
                 "label": query_spec["label"],
                 "support": query_spec["support"],
@@ -844,6 +965,7 @@ def main():
         cluster_rows.append(
             {
                 "benchmark_type": query_spec["benchmark_type"],
+                "query_family": query_family(query_spec["benchmark_type"]),
                 "query": query_spec["query"],
                 "label": query_spec["label"],
                 "support": query_spec["support"],
@@ -889,6 +1011,7 @@ def main():
             image_hit_rows.append(
                 {
                     "benchmark_type": query_spec["benchmark_type"],
+                    "query_family": query_family(query_spec["benchmark_type"]),
                     "query": query_spec["query"],
                     "support": query_spec["support"],
                     "rank": rank,
@@ -918,6 +1041,7 @@ def main():
             cluster_hit_rows.append(
                 {
                     "benchmark_type": query_spec["benchmark_type"],
+                    "query_family": query_family(query_spec["benchmark_type"]),
                     "query": query_spec["query"],
                     "support": query_spec["support"],
                     "rank": rank,
@@ -932,10 +1056,10 @@ def main():
                 }
             )
 
-    image_df = pd.DataFrame(image_rows).sort_values(["benchmark_type", "query"])
-    cluster_df = pd.DataFrame(cluster_rows).sort_values(["benchmark_type", "query"])
-    image_hits_df = pd.DataFrame(image_hit_rows).sort_values(["query", "rank"])
-    cluster_hits_df = pd.DataFrame(cluster_hit_rows).sort_values(["query", "rank"])
+    image_df = pd.DataFrame(image_rows).sort_values(["query_family", "benchmark_type", "query"])
+    cluster_df = pd.DataFrame(cluster_rows).sort_values(["query_family", "benchmark_type", "query"])
+    image_hits_df = pd.DataFrame(image_hit_rows).sort_values(["query_family", "query", "rank"])
+    cluster_hits_df = pd.DataFrame(cluster_hit_rows).sort_values(["query_family", "query", "rank"])
     gt_pairs_df = pd.read_csv(gt_csv_path, encoding="utf-8")
 
     image_csv = os.path.join(args.report_dir, "image_level_metrics.csv")
@@ -971,6 +1095,8 @@ def main():
 
     summary = {
         "config": config,
+        "image_level_family_macro": image_df.groupby("query_family")[["recall@1", "recall@5", "recall@10", "mrr", "ndcg@10"]].mean().round(4).to_dict(orient="index"),
+        "cluster_level_family_macro": cluster_df.groupby("query_family")[["cluster_precision@10", "cluster_precision@20", "image_recall_from_clusters@10", "image_recall_from_clusters@20", "cluster_mrr"]].mean().round(4).to_dict(orient="index"),
         "image_level_macro": image_df.groupby("benchmark_type")[["recall@1", "recall@5", "recall@10", "mrr", "ndcg@10"]].mean().round(4).to_dict(orient="index"),
         "cluster_level_macro": cluster_df.groupby("benchmark_type")[["cluster_precision@10", "cluster_precision@20", "image_recall_from_clusters@10", "image_recall_from_clusters@20", "cluster_mrr"]].mean().round(4).to_dict(orient="index"),
     }
@@ -986,6 +1112,7 @@ def main():
         image_hits_df,
         cluster_hits_df,
         visualizations_dir,
+        config=config,
     )
 
     print(f"Saved image-level metrics to {image_csv}")
