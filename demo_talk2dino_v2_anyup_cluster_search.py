@@ -128,6 +128,15 @@ def make_cluster_legend_overlay(image, cluster_id_map, cluster_items, top_cluste
     if not top_items:
         return image_np, []
 
+    if cluster_id_map.shape[:2] != image_np.shape[:2]:
+        resized_cluster_map = cv2.resize(
+            cluster_id_map.astype(np.int32),
+            (image.width, image.height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+    else:
+        resized_cluster_map = cluster_id_map
+
     palette = plt.get_cmap("tab10")
     overlay = image_np.copy()
     legend_entries = []
@@ -137,7 +146,7 @@ def make_cluster_legend_overlay(image, cluster_id_map, cluster_items, top_cluste
     for idx, item in enumerate(top_items):
         cluster_id = int(item["cluster_id"])
         score = float(item["score"])
-        mask = cluster_id_map == cluster_id
+        mask = resized_cluster_map == cluster_id
         if not np.any(mask):
             continue
 

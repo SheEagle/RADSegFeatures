@@ -439,7 +439,18 @@ return numer / denom;
                 grouped.setdefault(result["image_id"], []).append(result)
             display_items = [(image_id, items, max(item["score"] for item in items)) for image_id, items in grouped.items()]
         else:
-            display_items = [(result["image_id"], result["cluster_hits"], result["score"]) for result in results]
+            display_items = []
+            for result in results:
+                cluster_items = result.get("cluster_hits")
+                if not cluster_items:
+                    cluster_items = [
+                        {
+                            "image_id": result["image_id"],
+                            "cluster_id": int(result.get("cluster_id", 0)),
+                            "score": float(result.get("score", 0.0)),
+                        }
+                    ]
+                display_items.append((result["image_id"], cluster_items, result["score"]))
 
         cols = min(3, len(display_items))
         rows = math.ceil(len(display_items) / cols)

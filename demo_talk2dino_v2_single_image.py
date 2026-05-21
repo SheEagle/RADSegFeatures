@@ -1,6 +1,8 @@
 import argparse
+import importlib
 import json
 import math
+import sys
 from pathlib import Path
 
 import clip
@@ -9,6 +11,7 @@ import numpy as np
 import torch
 from huggingface_hub import snapshot_download
 from PIL import Image
+from safetensors.torch import load_file
 from transformers import AutoModel
 from transformers.modeling_utils import PreTrainedModel
 from torchvision.io import read_image
@@ -30,6 +33,24 @@ DEFAULT_PALETTE = [
 ]
 
 
+def is_talk2dinov3_model(model_id: str) -> bool:
+    return "talk2dinov3" in model_id.lower()
+
+
+def snapshot_model_local_dir(model_id: str) -> str:
+    local_dir = Path("scratch") / "hf_models" / model_id.replace("/", "__").replace("-", "_")
+    try:
+        return snapshot_download(
+            repo_id=model_id,
+            local_dir=str(local_dir),
+            local_dir_use_symlinks=False,
+        )
+    except Exception:
+        if (local_dir / "config.json").exists():
+            return str(local_dir)
+        raise
+
+
 def patch_talk2dino_loading():
     original = PreTrainedModel.mark_tied_weights_as_initialized
 
@@ -43,11 +64,7 @@ def patch_talk2dino_loading():
 
 
 def patch_clip_loading(model_id: str):
-    local_dir = snapshot_download(
-        repo_id=model_id,
-        local_dir=str(Path("scratch") / "hf_models" / model_id.replace("/", "__").replace("-", "_")),
-        local_dir_use_symlinks=False,
-    )
+    local_dir = snapshot_model_local_dir(model_id)
     config_path = Path(local_dir) / "config.json"
     clip_model_name = "ViT-B/16"
     if config_path.exists():
@@ -64,6 +81,43 @@ def patch_clip_loading(model_id: str):
 
     clip.load = patched_clip_load
     return original_clip_load
+
+
+def load_talk2dino_model(model_id: str, device: str):
+    original_patch = patch_talk2dino_loading()
+    original_clip_patch = patch_clip_loading(model_id)
+    local_dir = snapshot_model_local_dir(model_id)
+    try:
+        if is_talk2dinov3_model(model_id):
+            package_name = model_id.replace("/", "__").replace("-", "_")
+            init_path = Path(local_dir) / "__init__.py"
+            if not init_path.exists():
+                init_path.write_text("", encoding="utf-8")
+            parent_dir = str(Path(local_dir).parent)
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+            talk2dino_module = importlib.import_module(f"{package_name}.modeling_talk2dino")
+            talk2dino_cls = getattr(talk2dino_module, "Talk2DINO")
+            config_module = importlib.import_module(f"{package_name}.configuration_talk2dino")
+            config_cls = getattr(config_module, "Talk2DINOConfig")
+            config = config_cls.from_pretrained(local_dir)
+            model = talk2dino_cls(config)
+            checkpoint = load_file(str(Path(local_dir) / "model.safetensors"))
+            remapped = {
+                key.replace(".weight_1", ".gamma_1").replace(".weight_2", ".gamma_2"): value
+                for key, value in checkpoint.items()
+            }
+            missing, _unexpected = model.load_state_dict(remapped, strict=False, assign=True)
+            real_missing = [key for key in missing if "pamr" not in key]
+            if real_missing:
+                print(f"[talk2dinov3_load] Unexpected missing keys: {real_missing}")
+        else:
+            model = AutoModel.from_pretrained(local_dir, trust_remote_code=True)
+    finally:
+        PreTrainedModel.mark_tied_weights_as_initialized = original_patch
+        clip.load = original_clip_patch
+
+    return model.to(device).eval()
 
 
 def build_parser():
@@ -280,13 +334,7 @@ def render_demo(
     print(f"Using device: {device}")
     print(f"Loading model: {model_id}")
 
-    original_patch = patch_talk2dino_loading()
-    original_clip_patch = patch_clip_loading(model_id)
-    try:
-        model = AutoModel.from_pretrained(model_id, trust_remote_code=True).to(device).eval()
-    finally:
-        PreTrainedModel.mark_tied_weights_as_initialized = original_patch
-        clip.load = original_clip_patch
+    model = load_talk2dino_model(model_id, device)
 
     image = Image.open(image_path).convert("RGB")
     image_np = np.array(image)

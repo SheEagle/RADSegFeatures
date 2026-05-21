@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from transformers import AutoModel
 
 from batch_extract_features import adaptive_spherical_kmeans
 from demo_talk2dino_v2_single_image import (
@@ -15,12 +14,9 @@ from demo_talk2dino_v2_single_image import (
     DEFAULT_IMAGE_PATH,
     DEFAULT_MODEL_ID,
     build_hr_image_tensor,
-    patch_clip_loading,
-    patch_talk2dino_loading,
     extract_lr_feature_map,
+    load_talk2dino_model,
 )
-from transformers.modeling_utils import PreTrainedModel
-import clip
 
 
 def build_parser():
@@ -59,17 +55,6 @@ def build_palette(num_clusters: int):
         return base[:num_clusters]
     extra = np.random.default_rng(0).integers(0, 255, size=(num_clusters - len(base), 3), dtype=np.uint8)
     return np.concatenate([base, extra], axis=0)
-
-
-def load_talk2dino_model(model_id: str, device: str):
-    original_patch = patch_talk2dino_loading()
-    original_clip_patch = patch_clip_loading(model_id)
-    try:
-        model = AutoModel.from_pretrained(model_id, trust_remote_code=True).to(device).eval()
-    finally:
-        PreTrainedModel.mark_tied_weights_as_initialized = original_patch
-        clip.load = original_clip_patch
-    return model
 
 
 def upsample_anyup_features(model, upsampler, image: Image.Image, device: str, q_chunk_size=None, output_size=None):

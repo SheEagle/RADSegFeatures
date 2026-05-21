@@ -309,8 +309,31 @@ return score;
         best_per_image = {}
         for item in scored_hits:
             image_id = item["image_id"]
-            if image_id not in best_per_image or item["score"] > best_per_image[image_id]["score"]:
-                best_per_image[image_id] = item
+            if image_id not in best_per_image:
+                best_per_image[image_id] = {
+                    "image_id": image_id,
+                    "cluster_id": int(item["cluster_id"]),
+                    "score": float(item["score"]),
+                    "cluster_hits": [item],
+                }
+            else:
+                if item["score"] > best_per_image[image_id]["score"]:
+                    best_per_image[image_id]["score"] = float(item["score"])
+                    best_per_image[image_id]["cluster_id"] = int(item["cluster_id"])
+                best_per_image[image_id]["cluster_hits"].append(item)
+
+        for payload in best_per_image.values():
+            dedup = {}
+            for hit in payload["cluster_hits"]:
+                cluster_id = int(hit["cluster_id"])
+                if cluster_id not in dedup or hit["score"] > dedup[cluster_id]["score"]:
+                    dedup[cluster_id] = hit
+            payload["cluster_hits"] = sorted(
+                dedup.values(),
+                key=lambda hit: hit["score"],
+                reverse=True,
+            )
+
         return sorted(best_per_image.values(), key=lambda item: item["score"], reverse=True)[:top_k]
 
 

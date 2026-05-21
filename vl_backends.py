@@ -17,6 +17,7 @@ from transformers.modeling_utils import PreTrainedModel
 from demo_talk2dino_v2_single_image import (
     build_hr_image_tensor,
     extract_lr_feature_map,
+    load_talk2dino_model,
     patch_clip_loading,
     patch_talk2dino_loading,
 )
@@ -115,6 +116,11 @@ class Talk2DINOBackend(VisionLanguageBackend):
     def __init__(self, model_id="lorebianchi98/Talk2DINO-ViTL", device="cuda"):
         super().__init__(device=device)
         print(f"Loading Talk2DINO model {model_id}...")
+        if "talk2dinov3" in model_id.lower():
+            self.model = load_talk2dino_model(model_id, self.device)
+            self.transform = None
+            return
+
         package_name = model_id.replace("/", "__").replace("-", "_")
         local_model_dir = snapshot_download(
             repo_id=model_id,
@@ -207,13 +213,7 @@ class Talk2DINOAnyUpBackend(VisionLanguageBackend):
     ):
         super().__init__(device=device)
         print(f"Loading Talk2DINO + AnyUp model {model_id}...")
-        original_patch = patch_talk2dino_loading()
-        original_clip_patch = patch_clip_loading(model_id)
-        try:
-            self.model = AutoModel.from_pretrained(model_id, trust_remote_code=True).to(self.device).eval()
-        finally:
-            PreTrainedModel.mark_tied_weights_as_initialized = original_patch
-            clip.load = original_clip_patch
+        self.model = load_talk2dino_model(model_id, self.device)
 
         print(f"Loading AnyUp: {anyup_entrypoint} (use_natten={anyup_use_natten})")
         self.upsampler = torch.hub.load(
