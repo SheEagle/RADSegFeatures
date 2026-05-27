@@ -28,6 +28,9 @@ def infer_vector_dim(jsonl_path: Path) -> int:
             image_embedding = record.get("image_embedding")
             if image_embedding:
                 return len(image_embedding)
+            metadata_embedding = record.get("metadata_embedding")
+            if metadata_embedding:
+                return len(metadata_embedding)
             for cluster in record.get("clusters", []):
                 vector = cluster["v"] if isinstance(cluster, dict) else cluster
                 return len(vector)
@@ -43,6 +46,8 @@ def count_vectors(jsonl_path: Path) -> int:
             record = json.loads(line)
             total += len(record.get("clusters", []))
             if record.get("image_embedding"):
+                total += 1
+            if record.get("metadata_embedding"):
                 total += 1
     return total
 
@@ -119,6 +124,23 @@ def generate_actions(jsonl_path: Path, index_name: str, metadata_by_image: dict 
                 yield {
                     "_index": index_name,
                     "_id": f"{image_id}__image",
+                    "_source": source,
+                }
+
+            metadata_embedding = record.get("metadata_embedding")
+            if metadata_embedding:
+                source = {
+                    "image_id": image_id,
+                    "cluster_id": -2,
+                    "embedding_type": "metadata",
+                    "vector": metadata_embedding,
+                }
+                source.update(metadata_by_image.get(image_id, {}))
+                if record.get("metadata_text") and not source.get("metadata_text"):
+                    source["metadata_text"] = record["metadata_text"]
+                yield {
+                    "_index": index_name,
+                    "_id": f"{image_id}__metadata",
                     "_source": source,
                 }
 

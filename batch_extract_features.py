@@ -1,6 +1,8 @@
 import argparse
+import csv
 import json
 import os
+import re
 
 import torch
 import torch.nn.functional as F
@@ -11,6 +13,60 @@ from tqdm import tqdm
 from vl_backends import create_backend
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+METADATA_FIELDS = [
+    "final_country",
+    "final_city",
+    "final_place",
+    "date",
+    "description",
+    "transcription",
+    "landmarks_identified",
+    "historical_record_uuid",
+]
+
+
+def compact_metadata_text(row):
+    def clean(value):
+        text = (value or "").strip()
+        text = re.sub(r"https?://\S+", "", text)
+        text = re.sub(r"[()]", " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip(" ,;")
+
+    priority_values = [
+        clean(row.get("final_country")),
+        clean(row.get("final_city")),
+        clean(row.get("final_place")),
+        clean(row.get("landmarks_identified")),
+    ]
+    description = clean(row.get("description"))[:100]
+    transcription = clean(row.get("transcription"))[:60]
+    values = [value for value in priority_values + [description, transcription] if value]
+    return " ".join(values)[:260]
+
+
+def load_metadata_texts(metadata_csv):
+    if not metadata_csv:
+        return {}
+    if not os.path.exists(metadata_csv):
+        raise FileNotFoundError(f"Metadata CSV not found: {metadata_csv}")
+
+    metadata_by_image = {}
+    with open(metadata_csv, "r", encoding="latin1", newline="") as handle:
+        for row in csv.DictReader(handle):
+            image_id = (row.get("image_filename") or "").strip()
+            if not image_id:
+                continue
+            metadata_text = compact_metadata_text(row)
+            if metadata_text:
+                metadata_by_image[image_id] = metadata_text
+    return metadata_by_image
+
+
+def format_exception(exc):
+    text = str(exc)
+    return text.encode("ascii", errors="backslashreplace").decode("ascii", errors="replace")
 
 
 def spherical_kmeans(features, num_clusters=100, num_iters=100, tol=1e-4):
@@ -142,12 +198,14 @@ class FeatureBatchExtractor:
         anyup_use_natten=False,
         anyup_q_chunk_size=None,
         anyup_output_size=(384, 384),
+        metadata_by_image=None,
     ):
         self.device = device
         self.num_clusters = num_clusters
         self.min_cluster_pixels = min_cluster_pixels
         self.merge_similarity = merge_similarity
         self.backend_name = backend_name
+        self.metadata_by_image = metadata_by_image or {}
 
         self.backend = create_backend(
             backend_name=backend_name,
@@ -163,7 +221,7 @@ class FeatureBatchExtractor:
         self.transform = self.backend.transform
 
     @torch.no_grad()
-    def process_tensor(self, img_tensor):
+    def process_tensor(self, img_tensor, image_id=None):
         if isinstance(img_tensor, torch.Tensor):
             img_tensor = img_tensor.to(self.device)
         visual_aligned = self.backend.encode_image_to_feature_map(img_tensor)
@@ -197,6 +255,10 @@ class FeatureBatchExtractor:
         if image_embedding is not None:
             result["image_embedding"] = image_embedding.squeeze(0).detach().cpu().tolist()
             result["image_embedding_type"] = "cls"
+        if image_id and image_id in self.metadata_by_image:
+            metadata_embedding = self.backend.encode_text([self.metadata_by_image[image_id]])
+            result["metadata_embedding"] = metadata_embedding.squeeze(0).detach().cpu().tolist()
+            result["metadata_text"] = self.metadata_by_image[image_id]
 
         return result
 
@@ -264,6 +326,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_version", type=str, default="c-radio_v4-h")
     parser.add_argument("--lang_model", type=str, default="siglip2-g")
     parser.add_argument("--model_id", type=str, default=None)
+    parser.add_argument("--metadata_csv", type=str, default=None, help="Optional metadata CSV used to add metadata embeddings")
     parser.add_argument("--anyup_entrypoint", type=str, default="anyup_multi_backbone")
     parser.add_argument("--anyup_use_natten", action="store_true")
     parser.add_argument("--anyup_q_chunk_size", type=int, default=None)
@@ -278,6 +341,9 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda")
 
     args = parser.parse_args()
+    metadata_by_image = load_metadata_texts(args.metadata_csv)
+    if metadata_by_image:
+        print(f"Loaded metadata text for {len(metadata_by_image)} images.")
 
     extractor = FeatureBatchExtractor(
         backend_name=args.backend,
@@ -292,6 +358,7 @@ if __name__ == "__main__":
         anyup_use_natten=args.anyup_use_natten,
         anyup_q_chunk_size=args.anyup_q_chunk_size,
         anyup_output_size=tuple(args.anyup_output_size) if args.anyup_output_size is not None else None,
+        metadata_by_image=metadata_by_image,
     )
 
     if not os.path.exists(args.input_dir):
@@ -362,9 +429,12 @@ if __name__ == "__main__":
                 continue
 
             try:
-                result = extractor.process_tensor(sample.unsqueeze(0) if isinstance(sample, torch.Tensor) else sample)
+                result = extractor.process_tensor(
+                    sample.unsqueeze(0) if isinstance(sample, torch.Tensor) else sample,
+                    image_id=img_name,
+                )
                 result["image_id"] = img_name
                 write_file.write(json.dumps(result) + "\n")
                 write_file.flush()
             except Exception as exc:
-                print(f"Error processing {img_name}: {exc}")
+                print(f"Error processing {img_name}: {format_exception(exc)}")
