@@ -25,6 +25,9 @@ def infer_vector_dim(jsonl_path: Path) -> int:
             if not line.strip():
                 continue
             record = json.loads(line)
+            image_embedding = record.get("image_embedding")
+            if image_embedding:
+                return len(image_embedding)
             for cluster in record.get("clusters", []):
                 vector = cluster["v"] if isinstance(cluster, dict) else cluster
                 return len(vector)
@@ -37,7 +40,10 @@ def count_vectors(jsonl_path: Path) -> int:
         for line in handle:
             if not line.strip():
                 continue
-            total += len(json.loads(line).get("clusters", []))
+            record = json.loads(line)
+            total += len(record.get("clusters", []))
+            if record.get("image_embedding"):
+                total += 1
     return total
 
 
@@ -71,6 +77,7 @@ def create_index(es: Elasticsearch, index_name: str, dims: int, recreate: bool) 
             "properties": {
                 "image_id": {"type": "keyword"},
                 "cluster_id": {"type": "integer"},
+                "embedding_type": {"type": "keyword"},
                 "final_country": {"type": "keyword"},
                 "final_city": {"type": "keyword"},
                 "final_place": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
@@ -100,6 +107,21 @@ def generate_actions(jsonl_path: Path, index_name: str, metadata_by_image: dict 
                 continue
             record = json.loads(line)
             image_id = record["image_id"]
+            image_embedding = record.get("image_embedding")
+            if image_embedding:
+                source = {
+                    "image_id": image_id,
+                    "cluster_id": -1,
+                    "embedding_type": record.get("image_embedding_type", "image"),
+                    "vector": image_embedding,
+                }
+                source.update(metadata_by_image.get(image_id, {}))
+                yield {
+                    "_index": index_name,
+                    "_id": f"{image_id}__image",
+                    "_source": source,
+                }
+
             for fallback_cluster_id, cluster in enumerate(record.get("clusters", [])):
                 if isinstance(cluster, dict):
                     cluster_id = int(cluster.get("cluster_id", fallback_cluster_id))
@@ -111,6 +133,7 @@ def generate_actions(jsonl_path: Path, index_name: str, metadata_by_image: dict 
                 source = {
                     "image_id": image_id,
                     "cluster_id": cluster_id,
+                    "embedding_type": "cluster",
                     "vector": vector,
                 }
                 source.update(metadata_by_image.get(image_id, {}))

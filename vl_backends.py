@@ -34,6 +34,13 @@ class VisionLanguageBackend:
     def encode_image_to_feature_map(self, image_input):
         raise NotImplementedError
 
+    @torch.no_grad()
+    def encode_image_embedding(self, image_input, feature_map=None) -> torch.Tensor | None:
+        if feature_map is None:
+            feature_map = self.encode_image_to_feature_map(image_input)
+        embedding = feature_map.mean(dim=(2, 3))
+        return F.normalize(embedding, dim=-1)
+
 
 class RADSegBackend(VisionLanguageBackend):
     def __init__(self, model_version="c-radio_v4-h", lang_model="siglip2-g", device="cuda"):
@@ -110,6 +117,17 @@ class TIPSBackend(VisionLanguageBackend):
 
         feature_map = patch_tokens.reshape(batch_size, side, side, channels).permute(0, 3, 1, 2)
         return F.normalize(feature_map, dim=1)
+
+    @torch.no_grad()
+    def encode_image_embedding(self, image_input, feature_map=None) -> torch.Tensor | None:
+        outputs = self.model.encode_image(image_input.to(self.device))
+        for attr_name in ("image_embeds", "image_features", "pooler_output"):
+            value = getattr(outputs, attr_name, None)
+            if value is not None:
+                if not isinstance(value, torch.Tensor):
+                    value = torch.as_tensor(value)
+                return F.normalize(value.to(self.device), dim=-1)
+        return super().encode_image_embedding(image_input, feature_map=feature_map)
 
 
 class Talk2DINOBackend(VisionLanguageBackend):
@@ -200,6 +218,10 @@ class Talk2DINOBackend(VisionLanguageBackend):
 
         return F.normalize(feature_map, dim=1)
 
+    @torch.no_grad()
+    def encode_image_embedding(self, image_input, feature_map=None) -> torch.Tensor | None:
+        return encode_talk2dino_cls_token(self.model, image_input, self.device)
+
 
 class Talk2DINOAnyUpBackend(VisionLanguageBackend):
     def __init__(
@@ -254,6 +276,32 @@ class Talk2DINOAnyUpBackend(VisionLanguageBackend):
         hr_features = self.upsampler(hr_image, lr_features, **kwargs)
         hr_features = hr_features.to(self.device)
         return F.normalize(hr_features, dim=1)
+
+    @torch.no_grad()
+    def encode_image_embedding(self, image_input, feature_map=None) -> torch.Tensor | None:
+        return encode_talk2dino_cls_token(self.model, image_input, self.device)
+
+
+def encode_talk2dino_cls_token(model, image_input, device) -> torch.Tensor:
+    if not isinstance(image_input, Image.Image):
+        raise ValueError("Talk2DINO CLS extraction expects a PIL.Image input.")
+
+    image_tensor = model.image_transforms(image_input).to(device).unsqueeze(0)
+    features = model.model.forward_features(image_tensor)
+    if isinstance(features, dict):
+        if "x_norm_clstoken" in features:
+            cls_token = features["x_norm_clstoken"]
+        elif "x_norm_patchtokens" in features:
+            cls_token = features["x_norm_patchtokens"].mean(dim=1)
+        else:
+            tensor_values = [value for value in features.values() if isinstance(value, torch.Tensor)]
+            if not tensor_values:
+                raise ValueError("Talk2DINO forward_features returned no tensor values.")
+            cls_token = tensor_values[0][:, 0, :] if tensor_values[0].dim() == 3 else tensor_values[0]
+    else:
+        cls_token = features[:, 0, :] if features.dim() == 3 else features
+
+    return F.normalize(cls_token.to(device), dim=-1)
 
 
 def create_backend(

@@ -414,8 +414,14 @@ def build_structured_queries(
             landmark_counter[landmark_name] += 1
             landmark_to_images[landmark_name].add(image_id)
 
+    if top_n_landmark <= 0:
+        return query_specs
+
+    landmark_count = 0
     for landmark_name, count in landmark_counter.most_common():
         if count < min_landmark_count:
+            break
+        if landmark_count >= top_n_landmark:
             break
         query_specs.append(
             {
@@ -426,8 +432,7 @@ def build_structured_queries(
                 "support": len(landmark_to_images[landmark_name]),
             }
         )
-        if sum(1 for item in query_specs if item["benchmark_type"] == "landmark") >= top_n_landmark:
-            break
+        landmark_count += 1
 
     return query_specs
 

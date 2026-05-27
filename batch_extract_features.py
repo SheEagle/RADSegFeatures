@@ -167,6 +167,7 @@ class FeatureBatchExtractor:
         if isinstance(img_tensor, torch.Tensor):
             img_tensor = img_tensor.to(self.device)
         visual_aligned = self.backend.encode_image_to_feature_map(img_tensor)
+        image_embedding = self.backend.encode_image_embedding(img_tensor, feature_map=visual_aligned)
 
         _, channels, height_fm, width_fm = visual_aligned.shape
         dense_flat = visual_aligned.permute(0, 2, 3, 1).reshape(-1, channels)
@@ -188,11 +189,16 @@ class FeatureBatchExtractor:
             for cluster_idx in range(centers.shape[0])
         ]
 
-        return {
+        result = {
             "clusters": clusters,
             "feature_map_size": [int(height_fm), int(width_fm)],
             "cluster_id_map": label_map.detach().cpu().tolist(),
         }
+        if image_embedding is not None:
+            result["image_embedding"] = image_embedding.squeeze(0).detach().cpu().tolist()
+            result["image_embedding_type"] = "cls"
+
+        return result
 
 
 class FastImageDataset(Dataset):
