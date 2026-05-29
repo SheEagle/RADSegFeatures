@@ -108,6 +108,37 @@ def _recompute_centers(features, labels, num_clusters):
     return centers, counts
 
 
+def geometric_median(points, max_iters=30, tol=1e-5):
+    if points.shape[0] == 0:
+        return points[:0]
+    if points.shape[0] == 1:
+        return F.normalize(points[0], dim=0)
+
+    estimate = points.mean(dim=0)
+    for _ in range(max_iters):
+        distances = torch.linalg.norm(points - estimate.unsqueeze(0), dim=1).clamp_min(1e-8)
+        weights = 1.0 / distances
+        next_estimate = (points * weights.unsqueeze(1)).sum(dim=0) / weights.sum()
+        if torch.linalg.norm(next_estimate - estimate) < tol:
+            estimate = next_estimate
+            break
+        estimate = next_estimate
+    return F.normalize(estimate, dim=0)
+
+
+def _recompute_geometric_median_centers(features, labels, num_clusters, max_iters=30):
+    centers = []
+    counts = torch.bincount(labels, minlength=num_clusters).to(features.device)
+    for cluster_id in range(num_clusters):
+        mask = labels == cluster_id
+        if mask.any():
+            centers.append(geometric_median(features[mask], max_iters=max_iters))
+        else:
+            centers.append(torch.zeros(features.shape[-1], device=features.device, dtype=features.dtype))
+    centers = torch.stack(centers, dim=0) if centers else features[:0]
+    return centers, counts
+
+
 def adaptive_spherical_kmeans(
     features,
     max_clusters=100,
@@ -115,6 +146,7 @@ def adaptive_spherical_kmeans(
     merge_similarity=0.985,
     num_iters=100,
     tol=1e-4,
+    representative_mode="mean",
 ):
     centers, labels = spherical_kmeans(
         features,
@@ -180,6 +212,126 @@ def adaptive_spherical_kmeans(
     else:
         final_centers = centers[:0]
 
+    if representative_mode == "geometric_median" and final_centers.shape[0] > 0:
+        final_centers, _ = _recompute_geometric_median_centers(
+            features,
+            remapped_labels,
+            final_centers.shape[0],
+        )
+    elif representative_mode != "mean":
+        raise ValueError(f"Unsupported representative_mode: {representative_mode}")
+
+    return final_centers, remapped_labels
+
+
+def downsample_feature_map_for_pooling(feature_map, max_tokens):
+    if max_tokens is None or max_tokens <= 0:
+        return feature_map
+
+    _, _, height, width = feature_map.shape
+    num_tokens = height * width
+    if num_tokens <= max_tokens:
+        return feature_map
+
+    scale = (max_tokens / float(num_tokens)) ** 0.5
+    pooled_height = max(1, int(height * scale))
+    pooled_width = max(1, int(width * scale))
+    while pooled_height * pooled_width > max_tokens:
+        if pooled_height >= pooled_width and pooled_height > 1:
+            pooled_height -= 1
+        elif pooled_width > 1:
+            pooled_width -= 1
+        else:
+            break
+    return F.adaptive_avg_pool2d(feature_map, output_size=(pooled_height, pooled_width))
+
+
+def assign_to_representatives(features, representatives, chunk_size=8192):
+    labels = []
+    for start in range(0, features.shape[0], chunk_size):
+        chunk = features[start : start + chunk_size]
+        sims = torch.matmul(chunk, representatives.transpose(0, 1))
+        labels.append(torch.argmax(sims, dim=-1))
+    return torch.cat(labels, dim=0)
+
+
+def hierarchical_token_pooling(
+    feature_map,
+    pool_factor=3,
+    max_pool_tokens=4096,
+    assignment_chunk_size=8192,
+):
+    try:
+        from colpali_engine.compression.token_pooling import HierarchicalTokenPooler
+    except ImportError as exc:
+        raise ImportError(
+            "Hierarchical pooling requires colpali-engine. Install it with: "
+            "pip install colpali-engine"
+        ) from exc
+
+    if feature_map.shape[0] != 1:
+        raise ValueError("Hierarchical pooling currently expects batch_size=1.")
+
+    pooling_map = downsample_feature_map_for_pooling(feature_map, max_pool_tokens)
+    pooling_tokens = pooling_map.permute(0, 2, 3, 1).reshape(-1, pooling_map.shape[1])
+    pooling_tokens = F.normalize(pooling_tokens.float(), dim=-1)
+
+    pooler = HierarchicalTokenPooler()
+    pooled = pooler.pool_embeddings([pooling_tokens], pool_factor=pool_factor)[0]
+    if not isinstance(pooled, torch.Tensor):
+        pooled = torch.as_tensor(pooled, device=feature_map.device)
+    representatives = F.normalize(pooled.to(feature_map.device).float(), dim=-1)
+
+    dense_flat = feature_map.permute(0, 2, 3, 1).reshape(-1, feature_map.shape[1])
+    dense_flat = F.normalize(dense_flat.float(), dim=-1)
+    labels = assign_to_representatives(
+        dense_flat,
+        representatives,
+        chunk_size=assignment_chunk_size,
+    )
+    return representatives, labels
+
+
+def slic_feature_clustering(feature_map, num_segments=15, compactness=0.1, representative_mode="mean"):
+    try:
+        from skimage.segmentation import slic
+    except ImportError as exc:
+        raise ImportError("SLIC pooling requires scikit-image. Install it with: pip install scikit-image") from exc
+
+    if feature_map.shape[0] != 1:
+        raise ValueError("SLIC clustering currently expects batch_size=1.")
+
+    _, channels, height, width = feature_map.shape
+    dense_hwc = feature_map[0].permute(1, 2, 0).detach().float().cpu().numpy()
+    segments = slic(
+        dense_hwc,
+        n_segments=int(num_segments),
+        compactness=float(compactness),
+        channel_axis=-1,
+        enforce_connectivity=True,
+        start_label=0,
+    )
+    labels = torch.from_numpy(segments.astype("int64")).to(feature_map.device).reshape(-1)
+    num_labels = int(labels.max().item()) + 1 if labels.numel() else 0
+    dense_flat = feature_map.permute(0, 2, 3, 1).reshape(-1, channels)
+    dense_flat = F.normalize(dense_flat.float(), dim=-1)
+    if representative_mode == "geometric_median":
+        centers, counts = _recompute_geometric_median_centers(dense_flat, labels, num_labels)
+    elif representative_mode == "mean":
+        centers, counts = _recompute_centers(dense_flat, labels, num_labels)
+    else:
+        raise ValueError(f"Unsupported representative_mode: {representative_mode}")
+
+    valid_ids = torch.nonzero(counts > 0, as_tuple=False).flatten()
+    remapped_labels = labels.clone()
+    final_centers = []
+    for new_id, old_id in enumerate(valid_ids.tolist()):
+        remapped_labels[labels == old_id] = new_id
+        final_centers.append(centers[old_id])
+    if final_centers:
+        final_centers = torch.stack(final_centers, dim=0)
+    else:
+        final_centers = centers[:0]
     return final_centers, remapped_labels
 
 
@@ -199,6 +351,12 @@ class FeatureBatchExtractor:
         anyup_q_chunk_size=None,
         anyup_output_size=(384, 384),
         metadata_by_image=None,
+        pooling_mode="kmeans",
+        pool_factor=3,
+        hierarchical_max_tokens=4096,
+        assignment_chunk_size=8192,
+        slic_compactness=0.1,
+        representative_mode="mean",
     ):
         self.device = device
         self.num_clusters = num_clusters
@@ -206,6 +364,12 @@ class FeatureBatchExtractor:
         self.merge_similarity = merge_similarity
         self.backend_name = backend_name
         self.metadata_by_image = metadata_by_image or {}
+        self.pooling_mode = pooling_mode
+        self.pool_factor = pool_factor
+        self.hierarchical_max_tokens = hierarchical_max_tokens
+        self.assignment_chunk_size = assignment_chunk_size
+        self.slic_compactness = slic_compactness
+        self.representative_mode = representative_mode
 
         self.backend = create_backend(
             backend_name=backend_name,
@@ -231,12 +395,30 @@ class FeatureBatchExtractor:
         dense_flat = visual_aligned.permute(0, 2, 3, 1).reshape(-1, channels)
         dense_flat = F.normalize(dense_flat, dim=-1)
 
-        centers, labels = adaptive_spherical_kmeans(
-            dense_flat,
-            max_clusters=self.num_clusters,
-            min_cluster_pixels=self.min_cluster_pixels,
-            merge_similarity=self.merge_similarity,
-        )
+        if self.pooling_mode == "kmeans":
+            centers, labels = adaptive_spherical_kmeans(
+                dense_flat,
+                max_clusters=self.num_clusters,
+                min_cluster_pixels=self.min_cluster_pixels,
+                merge_similarity=self.merge_similarity,
+                representative_mode=self.representative_mode,
+            )
+        elif self.pooling_mode == "hierarchical":
+            centers, labels = hierarchical_token_pooling(
+                visual_aligned,
+                pool_factor=self.pool_factor,
+                max_pool_tokens=self.hierarchical_max_tokens,
+                assignment_chunk_size=self.assignment_chunk_size,
+            )
+        elif self.pooling_mode == "slic":
+            centers, labels = slic_feature_clustering(
+                visual_aligned,
+                num_segments=self.num_clusters,
+                compactness=self.slic_compactness,
+                representative_mode=self.representative_mode,
+            )
+        else:
+            raise ValueError(f"Unsupported pooling_mode: {self.pooling_mode}")
         label_map = labels.reshape(height_fm, width_fm)
 
         clusters = [
@@ -251,7 +433,14 @@ class FeatureBatchExtractor:
             "clusters": clusters,
             "feature_map_size": [int(height_fm), int(width_fm)],
             "cluster_id_map": label_map.detach().cpu().tolist(),
+            "pooling_mode": self.pooling_mode,
+            "representative_mode": self.representative_mode,
         }
+        if self.pooling_mode == "hierarchical":
+            result["pool_factor"] = int(self.pool_factor)
+            result["hierarchical_max_tokens"] = int(self.hierarchical_max_tokens)
+        if self.pooling_mode == "slic":
+            result["slic_compactness"] = float(self.slic_compactness)
         if image_embedding is not None:
             result["image_embedding"] = image_embedding.squeeze(0).detach().cpu().tolist()
             result["image_embedding_type"] = "cls"
@@ -312,6 +501,37 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_clusters", type=int, default=100, help="Maximum number of clusters per image")
     parser.add_argument(
+        "--pooling_mode",
+        choices=["kmeans", "hierarchical", "slic"],
+        default="kmeans",
+        help="How to create region representatives from dense patch embeddings",
+    )
+    parser.add_argument(
+        "--pool_factor",
+        type=int,
+        default=3,
+        help="HierarchicalTokenPooler compression factor when --pooling_mode=hierarchical",
+    )
+    parser.add_argument(
+        "--hierarchical_max_tokens",
+        type=int,
+        default=4096,
+        help="Downsample dense maps to at most this many tokens before hierarchical pooling; set <=0 to disable",
+    )
+    parser.add_argument(
+        "--assignment_chunk_size",
+        type=int,
+        default=8192,
+        help="Chunk size for assigning full-resolution dense tokens back to representatives",
+    )
+    parser.add_argument("--slic_compactness", type=float, default=0.1, help="SLIC compactness when --pooling_mode=slic")
+    parser.add_argument(
+        "--representative_mode",
+        choices=["mean", "geometric_median"],
+        default="mean",
+        help="How to compute each cluster representative after clustering",
+    )
+    parser.add_argument(
         "--min_cluster_pixels",
         type=int,
         default=8,
@@ -359,6 +579,12 @@ if __name__ == "__main__":
         anyup_q_chunk_size=args.anyup_q_chunk_size,
         anyup_output_size=tuple(args.anyup_output_size) if args.anyup_output_size is not None else None,
         metadata_by_image=metadata_by_image,
+        pooling_mode=args.pooling_mode,
+        pool_factor=args.pool_factor,
+        hierarchical_max_tokens=args.hierarchical_max_tokens,
+        assignment_chunk_size=args.assignment_chunk_size,
+        slic_compactness=args.slic_compactness,
+        representative_mode=args.representative_mode,
     )
 
     if not os.path.exists(args.input_dir):
