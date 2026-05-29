@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from matplotlib.patches import Patch
 from PIL import Image
 
-from batch_extract_features import adaptive_spherical_kmeans, geometric_median
+from batch_extract_features import adaptive_spherical_kmeans
 from demo_talk2dino_v2_anyup_cluster_pca import (
     DEFAULT_ANYUP_MODEL,
     DEFAULT_IMAGE_PATH,
@@ -20,6 +20,24 @@ from demo_talk2dino_v2_anyup_cluster_pca import (
     load_talk2dino_model,
     upsample_anyup_features,
 )
+
+
+def geometric_median(points, max_iters=30, tol=1e-5):
+    if points.shape[0] == 0:
+        return points[:0]
+    if points.shape[0] == 1:
+        return F.normalize(points[0], dim=0)
+
+    estimate = points.mean(dim=0)
+    for _ in range(max_iters):
+        distances = torch.linalg.norm(points - estimate.unsqueeze(0), dim=1).clamp_min(1e-8)
+        weights = 1.0 / distances
+        next_estimate = (points * weights.unsqueeze(1)).sum(dim=0) / weights.sum()
+        if torch.linalg.norm(next_estimate - estimate) < tol:
+            estimate = next_estimate
+            break
+        estimate = next_estimate
+    return F.normalize(estimate, dim=0)
 
 
 def build_parser():
