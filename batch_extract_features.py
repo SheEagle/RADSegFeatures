@@ -295,7 +295,7 @@ if __name__ == "__main__":
         "--backend",
         type=str,
         default="tips",
-        choices=["tips", "talk2dino", "talk2dino_anyup", "radseg"],
+        choices=["tips", "tips_anyup", "talk2dino", "talk2dino_anyup", "radseg"],
         help="Vision-language backend used to produce dense features",
     )
     parser.add_argument(

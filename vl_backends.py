@@ -130,6 +130,63 @@ class TIPSBackend(VisionLanguageBackend):
         return super().encode_image_embedding(image_input, feature_map=feature_map)
 
 
+class TIPSAnyUpBackend(TIPSBackend):
+    def __init__(
+        self,
+        model_id="google/tipsv2-l14",
+        device="cuda",
+        anyup_entrypoint="anyup_multi_backbone",
+        anyup_use_natten=False,
+        anyup_q_chunk_size=None,
+        anyup_output_size=(384, 384),
+    ):
+        super().__init__(model_id=model_id, device=device)
+
+        print(f"Loading AnyUp: {anyup_entrypoint} (use_natten={anyup_use_natten})")
+        self.upsampler = torch.hub.load(
+            "wimmerth/anyup",
+            anyup_entrypoint,
+            use_natten=anyup_use_natten,
+        ).to(self.device).eval()
+
+        self.anyup_q_chunk_size = anyup_q_chunk_size
+        self.anyup_output_size = tuple(anyup_output_size) if anyup_output_size is not None else None
+        self.transform = None
+
+    @torch.no_grad()
+    def encode_image_to_feature_map(self, image_input) -> torch.Tensor:
+        if not isinstance(image_input, Image.Image):
+            raise ValueError("TIPSAnyUpBackend expects a PIL.Image input.")
+
+        transformed = TIPSBackend.encode_image_to_feature_map(
+            self,
+            self.transform_for_tips(image_input).unsqueeze(0),
+        )
+        hr_image = build_hr_image_tensor(image_input, self.device)
+        kwargs = {}
+        if self.anyup_q_chunk_size is not None:
+            kwargs["q_chunk_size"] = self.anyup_q_chunk_size
+        if self.anyup_output_size is not None:
+            kwargs["output_size"] = self.anyup_output_size
+        hr_features = self.upsampler(hr_image, transformed, **kwargs)
+        return F.normalize(hr_features.to(self.device), dim=1)
+
+    def transform_for_tips(self, image_input):
+        return T.Compose(
+            [
+                T.Resize((448, 448)),
+                T.ToTensor(),
+            ]
+        )(image_input).to(self.device)
+
+    @torch.no_grad()
+    def encode_image_embedding(self, image_input, feature_map=None) -> torch.Tensor | None:
+        if not isinstance(image_input, Image.Image):
+            return super().encode_image_embedding(image_input, feature_map=feature_map)
+        image_tensor = self.transform_for_tips(image_input).unsqueeze(0)
+        return TIPSBackend.encode_image_embedding(self, image_tensor, feature_map=feature_map)
+
+
 class Talk2DINOBackend(VisionLanguageBackend):
     def __init__(self, model_id="lorebianchi98/Talk2DINO-ViTL", device="cuda"):
         super().__init__(device=device)
@@ -321,6 +378,16 @@ def create_backend(
     if backend_name == "tips":
         resolved_model_id = model_id or "google/tipsv2-l14"
         return TIPSBackend(model_id=resolved_model_id, device=device)
+    if backend_name == "tips_anyup":
+        resolved_model_id = model_id or "google/tipsv2-l14"
+        return TIPSAnyUpBackend(
+            model_id=resolved_model_id,
+            device=device,
+            anyup_entrypoint=anyup_entrypoint,
+            anyup_use_natten=anyup_use_natten,
+            anyup_q_chunk_size=anyup_q_chunk_size,
+            anyup_output_size=anyup_output_size,
+        )
     if backend_name == "talk2dino":
         resolved_model_id = model_id or "lorebianchi98/Talk2DINO-ViTL"
         return Talk2DINOBackend(model_id=resolved_model_id, device=device)
