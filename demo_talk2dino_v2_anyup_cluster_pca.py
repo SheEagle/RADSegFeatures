@@ -29,6 +29,7 @@ def build_parser():
     parser.add_argument("--num_clusters", type=int, default=8, help="Maximum number of clusters.")
     parser.add_argument("--min_cluster_pixels", type=int, default=8, help="Minimum cluster size before reassignment.")
     parser.add_argument("--merge_similarity", type=float, default=0.95, help="Merge clusters above this cosine similarity.")
+    parser.add_argument("--representative_mode", choices=["mean", "geometric_median"], default="mean")
     parser.add_argument("--anyup_entrypoint", default=DEFAULT_ANYUP_MODEL, help="torch.hub AnyUp entrypoint.")
     parser.add_argument("--anyup_use_natten", action="store_true", help="Use NATTEN-based AnyUp model.")
     parser.add_argument("--anyup_q_chunk_size", type=int, default=None, help="Optional AnyUp q_chunk_size.")
@@ -85,7 +86,13 @@ def compute_pca_rgb(feature_map: torch.Tensor):
     return proj.detach().cpu().numpy()
 
 
-def cluster_feature_map(feature_map: torch.Tensor, num_clusters: int, min_cluster_pixels: int, merge_similarity: float):
+def cluster_feature_map(
+    feature_map: torch.Tensor,
+    num_clusters: int,
+    min_cluster_pixels: int,
+    merge_similarity: float,
+    representative_mode: str = "mean",
+):
     b, c, h, w = feature_map.shape
     assert b == 1
     flat = feature_map[0].permute(1, 2, 0).reshape(-1, c)
@@ -94,6 +101,7 @@ def cluster_feature_map(feature_map: torch.Tensor, num_clusters: int, min_cluste
         max_clusters=num_clusters,
         min_cluster_pixels=min_cluster_pixels,
         merge_similarity=merge_similarity,
+        representative_mode=representative_mode,
     )
     label_map = labels.reshape(h, w)
     return centers, label_map
@@ -109,6 +117,7 @@ def render_demo(
     anyup_entrypoint: str,
     anyup_use_natten: bool,
     anyup_q_chunk_size,
+    representative_mode: str,
 ):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -132,6 +141,7 @@ def render_demo(
         num_clusters=num_clusters,
         min_cluster_pixels=min_cluster_pixels,
         merge_similarity=merge_similarity,
+        representative_mode=representative_mode,
     )
 
     palette = build_palette(int(centers.shape[0]))
@@ -152,7 +162,8 @@ def render_demo(
     axes[2].imshow(cluster_rgb, alpha=0.55, interpolation="nearest")
     axes[2].set_title(
         f"AnyUp cluster overlay\nrequested={num_clusters}, final={centers.shape[0]}\n"
-        f"min_pixels={min_cluster_pixels}, merge_sim={merge_similarity}"
+        f"min_pixels={min_cluster_pixels}, merge_sim={merge_similarity}\n"
+        f"representative={representative_mode}"
     )
     axes[2].axis("off")
 
@@ -187,6 +198,7 @@ def main():
         anyup_entrypoint=args.anyup_entrypoint,
         anyup_use_natten=args.anyup_use_natten,
         anyup_q_chunk_size=args.anyup_q_chunk_size,
+        representative_mode=args.representative_mode,
     )
 
 
