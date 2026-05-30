@@ -27,6 +27,7 @@ class VisionLanguageBackend:
     def __init__(self, device="cuda"):
         self.device = device
         self.transform = None
+        self.image_embedding_type = "mean_pooled_dense"
 
     def encode_text(self, prompts: List[str]) -> torch.Tensor:
         raise NotImplementedError
@@ -81,6 +82,7 @@ class RADSegBackend(VisionLanguageBackend):
 class TIPSBackend(VisionLanguageBackend):
     def __init__(self, model_id="google/tipsv2-l14", device="cuda"):
         super().__init__(device=device)
+        self.image_embedding_type = "native_image_embedding"
         print(f"Loading TIPS model {model_id}...")
         self.model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
         self.model = self.model.to(self.device).eval()
@@ -190,6 +192,7 @@ class TIPSAnyUpBackend(TIPSBackend):
 class Talk2DINOBackend(VisionLanguageBackend):
     def __init__(self, model_id="lorebianchi98/Talk2DINO-ViTL", device="cuda"):
         super().__init__(device=device)
+        self.image_embedding_type = "native_cls_token"
         print(f"Loading Talk2DINO model {model_id}...")
         if "talk2dinov3" in model_id.lower():
             self.model = load_talk2dino_model(model_id, self.device)
@@ -291,6 +294,7 @@ class Talk2DINOAnyUpBackend(VisionLanguageBackend):
         anyup_output_size=(384, 384),
     ):
         super().__init__(device=device)
+        self.image_embedding_type = "native_cls_token"
         print(f"Loading Talk2DINO + AnyUp model {model_id}...")
         self.model = load_talk2dino_model(model_id, self.device)
 

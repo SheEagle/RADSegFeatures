@@ -254,7 +254,11 @@ class FeatureBatchExtractor:
         }
         if image_embedding is not None:
             result["image_embedding"] = image_embedding.squeeze(0).detach().cpu().tolist()
-            result["image_embedding_type"] = "cls"
+            result["image_embedding_type"] = getattr(
+                self.backend,
+                "image_embedding_type",
+                "mean_pooled_dense",
+            )
         if image_id and image_id in self.metadata_by_image:
             metadata_embedding = self.backend.encode_text([self.metadata_by_image[image_id]])
             result["metadata_embedding"] = metadata_embedding.squeeze(0).detach().cpu().tolist()
