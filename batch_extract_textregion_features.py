@@ -16,7 +16,9 @@ from batch_extract_features import (
 )
 from demo_talk2dino_v2_anyup_cluster_search import (
     feature_regions_from_masks,
+    load_epoc_segmenter,
     load_textregion_mask_generator,
+    subobject_feature_map,
 )
 from vl_backends import create_backend
 
@@ -53,9 +55,11 @@ def safe_encode_metadata(backend, metadata_text):
 
 
 @torch.no_grad()
-def extract_textregion_record(
+def extract_region_record(
     backend,
-    generator,
+    segmentation_mode,
+    textregion_generator,
+    subobject_segmenter,
     image,
     image_id,
     metadata_by_image,
@@ -68,34 +72,44 @@ def extract_textregion_record(
     feature_map = backend.encode_image_to_feature_map(image)
     image_embedding = backend.encode_image_embedding(image, feature_map=feature_map)
 
-    image_np = torch.as_tensor(
-        __import__("numpy").asarray(image.convert("RGB")).copy(),
-        device=device,
-        dtype=torch.float32,
-    )
-    image_tensor_for_sam2 = torch.stack([image_np])
-    image_tensor_for_sam2 = generator.predictor._transforms(image_tensor_for_sam2)
-    ori_shape = image.size[1], image.size[0]
-    autocast_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
-    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=autocast_dtype, enabled=device == "cuda"):
-        sam2_masks = generator.generate_for_batch(image_tensor_for_sam2, [ori_shape], None)
-
-    if sam2_masks and sam2_masks[0]:
-        masks = torch.stack([mask["segmentations"] for mask in sam2_masks[0]])
-        centers, label_map = feature_regions_from_masks(
+    if segmentation_mode == "subobject":
+        centers, label_map = subobject_feature_map(
             feature_map,
-            masks,
+            image,
+            subobject_segmenter,
             min_mask_pixels=min_cluster_pixels,
-            max_masks=textregion_max_masks,
-            representative_mode=representative_mode,
-            mask_pooling_mode=mask_pooling_mode,
         )
+    elif segmentation_mode == "textregion":
+        image_np = torch.as_tensor(
+            __import__("numpy").asarray(image.convert("RGB")).copy(),
+            device=device,
+            dtype=torch.float32,
+        )
+        image_tensor_for_sam2 = torch.stack([image_np])
+        image_tensor_for_sam2 = textregion_generator.predictor._transforms(image_tensor_for_sam2)
+        ori_shape = image.size[1], image.size[0]
+        autocast_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=autocast_dtype, enabled=device == "cuda"):
+            sam2_masks = textregion_generator.generate_for_batch(image_tensor_for_sam2, [ori_shape], None)
+
+        if sam2_masks and sam2_masks[0]:
+            masks = torch.stack([mask["segmentations"] for mask in sam2_masks[0]])
+            centers, label_map = feature_regions_from_masks(
+                feature_map,
+                masks,
+                min_mask_pixels=min_cluster_pixels,
+                max_masks=textregion_max_masks,
+                representative_mode=representative_mode,
+                mask_pooling_mode=mask_pooling_mode,
+            )
+        else:
+            _, channels, height_fm, width_fm = feature_map.shape
+            flat = feature_map.permute(0, 2, 3, 1).reshape(-1, channels)
+            center = torch.nn.functional.normalize(flat.mean(dim=0, keepdim=True), dim=-1)
+            centers = center
+            label_map = torch.zeros((height_fm, width_fm), device=feature_map.device, dtype=torch.long)
     else:
-        _, channels, height_fm, width_fm = feature_map.shape
-        flat = feature_map.permute(0, 2, 3, 1).reshape(-1, channels)
-        center = torch.nn.functional.normalize(flat.mean(dim=0, keepdim=True), dim=-1)
-        centers = center
-        label_map = torch.zeros((height_fm, width_fm), device=feature_map.device, dtype=torch.long)
+        raise ValueError(f"Unsupported segmentation_mode: {segmentation_mode}")
 
     clusters = [
         {
@@ -110,11 +124,13 @@ def extract_textregion_record(
         "clusters": clusters,
         "feature_map_size": [int(label_map.shape[0]), int(label_map.shape[1])],
         "cluster_id_map": label_map.detach().cpu().tolist(),
-        "pooling_mode": "textregion_sam2",
+        "pooling_mode": "subobject_epoc" if segmentation_mode == "subobject" else "textregion_sam2",
         "representative_mode": representative_mode,
         "mask_pooling_mode": mask_pooling_mode,
-        "textregion_max_masks": int(textregion_max_masks),
+        "segmentation_mode": segmentation_mode,
     }
+    if segmentation_mode == "textregion":
+        result["textregion_max_masks"] = int(textregion_max_masks)
 
     if image_embedding is not None:
         result["image_embedding"] = image_embedding.squeeze(0).detach().cpu().tolist()
@@ -156,6 +172,12 @@ def main():
     parser.add_argument("--anyup_use_natten", action="store_true")
     parser.add_argument("--anyup_q_chunk_size", type=int, default=10)
     parser.add_argument("--anyup_output_size", nargs=2, type=int, default=[384, 384])
+    parser.add_argument(
+        "--segmentation_mode",
+        choices=["textregion", "subobject"],
+        default="textregion",
+        help="Region source after AnyUp: TextRegion/SAM2 masks or EPOC subobjects.",
+    )
     parser.add_argument("--textregion_repo", type=str, default="scratch/TextRegion")
     parser.add_argument("--textregion_sam2_checkpoint", type=str, default="scratch/TextRegion/checkpoints/sam2.1_hiera_large.pt")
     parser.add_argument("--textregion_model_cfg", type=str, default="configs/sam2.1/sam2.1_hiera_l.yaml")
@@ -164,6 +186,22 @@ def main():
     parser.add_argument("--textregion_pred_iou_thresh", type=float, default=0.6)
     parser.add_argument("--textregion_stability_score_thresh", type=float, default=0.6)
     parser.add_argument("--textregion_box_nms_thresh", type=float, default=0.9)
+    parser.add_argument(
+        "--subobjects_repo",
+        type=str,
+        default=None,
+        help="Path to a local clone of https://github.com/ChenDelong1999/subobjects.",
+    )
+    parser.add_argument(
+        "--subobject_checkpoint",
+        type=str,
+        default="chendelong/DirectSAM-b0-1024px-sa1b-2ep-1017",
+        help="DirectSAM checkpoint for EPOC subobject segmentation.",
+    )
+    parser.add_argument("--subobject_resolution", type=int, default=1024)
+    parser.add_argument("--subobject_threshold", type=float, default=0.1)
+    parser.add_argument("--subobject_max_tokens", type=int, default=64)
+    parser.add_argument("--subobject_crop", type=int, default=1)
     parser.add_argument("--min_cluster_pixels", type=int, default=8)
     parser.add_argument("--representative_mode", choices=["mean", "geometric_median"], default="geometric_median")
     parser.add_argument("--mask_pooling_mode", choices=["hard", "soft"], default="hard")
@@ -182,16 +220,29 @@ def main():
         anyup_q_chunk_size=args.anyup_q_chunk_size,
         anyup_output_size=tuple(args.anyup_output_size) if args.anyup_output_size is not None else None,
     )
-    generator = load_textregion_mask_generator(
-        repo_path=args.textregion_repo,
-        model_cfg=args.textregion_model_cfg,
-        checkpoint=args.textregion_sam2_checkpoint,
-        points_per_side=args.textregion_points_per_side,
-        pred_iou_thresh=args.textregion_pred_iou_thresh,
-        stability_score_thresh=args.textregion_stability_score_thresh,
-        box_nms_thresh=args.textregion_box_nms_thresh,
-        device=args.device,
-    )
+    textregion_generator = None
+    subobject_segmenter = None
+    if args.segmentation_mode == "textregion":
+        textregion_generator = load_textregion_mask_generator(
+            repo_path=args.textregion_repo,
+            model_cfg=args.textregion_model_cfg,
+            checkpoint=args.textregion_sam2_checkpoint,
+            points_per_side=args.textregion_points_per_side,
+            pred_iou_thresh=args.textregion_pred_iou_thresh,
+            stability_score_thresh=args.textregion_stability_score_thresh,
+            box_nms_thresh=args.textregion_box_nms_thresh,
+            device=args.device,
+        )
+    elif args.segmentation_mode == "subobject":
+        subobject_segmenter = load_epoc_segmenter(
+            repo_path=args.subobjects_repo,
+            checkpoint=args.subobject_checkpoint,
+            image_resolution=args.subobject_resolution,
+            threshold=args.subobject_threshold,
+            max_tokens=args.subobject_max_tokens,
+            crop=args.subobject_crop,
+            device=args.device,
+        )
 
     input_dir = Path(args.input_dir)
     image_paths = sorted(
@@ -224,8 +275,9 @@ def main():
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
+    progress_label = f"Extracting {args.segmentation_mode} vectors"
     with open(args.output_file, "a", encoding="utf-8") as write_file:
-        for batch in tqdm(dataloader, desc="Extracting TextRegion vectors"):
+        for batch in tqdm(dataloader, desc=progress_label):
             image, image_id, is_valid = batch[0]
             if not is_valid:
                 print(f"Skipping unreadable image: {image_id}")
@@ -233,9 +285,11 @@ def main():
             if image_id in processed_ids:
                 continue
             try:
-                result = extract_textregion_record(
+                result = extract_region_record(
                     backend=backend,
-                    generator=generator,
+                    segmentation_mode=args.segmentation_mode,
+                    textregion_generator=textregion_generator,
+                    subobject_segmenter=subobject_segmenter,
                     image=image,
                     image_id=image_id,
                     metadata_by_image=metadata_by_image,
