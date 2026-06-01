@@ -20,63 +20,231 @@ from vl_backends import create_backend
 COMMON_CONCEPTS = [
     {
         "benchmark_type": "concept",
-        "query": "bridge",
-        "label": "bridge",
-        "positive_patterns": [r"\bbridge\b", r"\bdrawbridge\b", r"\bviaduct\b", r"\barched bridge\b"],
-    },
-    {
-        "benchmark_type": "concept",
-        "query": "river",
-        "label": "river",
-        "positive_patterns": [r"\briver\b", r"\bcanal\b", r"\bwaterfront\b", r"\briverside\b"],
-    },
-    {
-        "benchmark_type": "concept",
-        "query": "water",
-        "label": "water",
-        "positive_patterns": [r"\bwater\b", r"\blake\b", r"\briver\b", r"\bcanal\b", r"\bharbor\b", r"\bharbour\b"],
-    },
-    {
-        "benchmark_type": "concept",
-        "query": "castle",
-        "label": "castle",
-        "positive_patterns": [r"\bcastle\b", r"\bfortress\b", r"\bpalace\b", r"\bschloss\b"],
-    },
-    {
-        "benchmark_type": "concept",
-        "query": "church",
-        "label": "church",
-        "positive_patterns": [r"\bchurch\b", r"\bcathedral\b", r"\bchapel\b", r"\bbasilica\b", r"\babbey\b", r"\bkirche\b", r"\bdomkirche\b"],
-    },
-    {
-        "benchmark_type": "concept",
-        "query": "tower",
-        "label": "tower",
-        "positive_patterns": [r"\btower\b", r"\bspire\b", r"\bbell tower\b", r"\bbelfry\b"],
-    },
-    {
-        "benchmark_type": "concept",
         "query": "street",
         "label": "street",
-        "positive_patterns": [r"\bstreet\b", r"\bavenue\b", r"\broad\b", r"\bboulevard\b", r"\blane\b", r"\bmarket street\b"],
+        "positive_patterns": [r"\bstreet\b", r"\bstreetscape\b", r"\bavenue\b", r"\broad\b", r"\bboulevard\b", r"\blane\b", r"\bstrasse\b", r"\bstraße\b"],
     },
     {
         "benchmark_type": "concept",
         "query": "square",
         "label": "square",
-        "positive_patterns": [r"\bsquare\b", r"\bplaza\b", r"\bmarket square\b", r"\bplatz\b"],
+        "positive_patterns": [r"\bsquare\b", r"\bplaza\b", r"\bmarket square\b", r"\bpublic square\b", r"\bplatz\b", r"\bt[ée]r\b", r"\bpiazza\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "market",
+        "label": "market",
+        "positive_patterns": [r"\bmarket\b", r"\bmarketplace\b", r"\bmarket square\b", r"\bbazaar\b", r"\bfair\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "waterfront",
+        "label": "waterfront",
+        "positive_patterns": [r"\bwaterfront\b", r"\briverside\b", r"\bseafront\b", r"\bquay\b", r"\bembankment\b", r"\bshorefront\b", r"\bharbor\b", r"\bharbour\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "harbor",
+        "label": "harbor",
+        "positive_patterns": [r"\bharbor\b", r"\bharbour\b", r"\bport\b", r"\bmarina\b", r"\bdock\b", r"\bquay\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "canal",
+        "label": "canal",
+        "positive_patterns": [r"\bcanal\b", r"\bwaterway\b", r"\bchannel\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "bridge",
+        "label": "bridge",
+        "positive_patterns": [r"\bbridge\b", r"\bdrawbridge\b", r"\bviaduct\b", r"\bfootbridge\b", r"\barched bridge\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "station",
+        "label": "station",
+        "positive_patterns": [r"\bstation\b", r"\brailway station\b", r"\btrain station\b", r"\bterminal\b", r"\bbahnhof\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "church",
+        "label": "church",
+        "positive_patterns": [r"\bchurch\b", r"\bkirche\b", r"\bdomkirche\b", r"\bbasilica\b", r"\babbey\b", r"\bchapel\b", r"\bcathedral\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "cathedral",
+        "label": "cathedral",
+        "positive_patterns": [r"\bcathedral\b", r"\bdom\b", r"\bduomo\b", r"\bminster\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "tower",
+        "label": "tower",
+        "positive_patterns": [r"\btower\b", r"\bspire\b", r"\bbelfry\b", r"\bclock tower\b", r"\bbell tower\b", r"\bminaret\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "bell tower",
+        "label": "bell_tower",
+        "positive_patterns": [r"\bbell tower\b", r"\bbelfry\b", r"\bcampanile\b", r"\bclock tower\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "dome",
+        "label": "dome",
+        "positive_patterns": [r"\bdome\b", r"\bdomed\b", r"\bcupola\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "castle",
+        "label": "castle",
+        "positive_patterns": [r"\bcastle\b", r"\bfortress\b", r"\bcitadel\b", r"\bschloss\b", r"\bchateau\b", r"\bchâteau\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "palace",
+        "label": "palace",
+        "positive_patterns": [r"\bpalace\b", r"\bpalazzo\b", r"\broyal residence\b", r"\bschloss\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "monument",
+        "label": "monument",
+        "positive_patterns": [r"\bmonument\b", r"\bmemorial\b", r"\bobelisk\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "statue",
+        "label": "statue",
+        "positive_patterns": [r"\bstatue\b", r"\bsculpture\b", r"\bequestrian statue\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "fountain",
+        "label": "fountain",
+        "positive_patterns": [r"\bfountain\b", r"\bfontana\b", r"\bbrunnen\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "arch",
+        "label": "arch",
+        "positive_patterns": [r"\barch\b", r"\barched\b", r"\btriumphal arch\b", r"\barchway\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "facade",
+        "label": "facade",
+        "positive_patterns": [r"\bfacade\b", r"\bfaçade\b", r"\bfrontage\b", r"\bfront facade\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "gate",
+        "label": "gate",
+        "positive_patterns": [r"\bgate\b", r"\bgateway\b", r"\bcity gate\b", r"\bentrance gate\b", r"\bporta\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "train",
+        "label": "train",
+        "positive_patterns": [r"\btrain\b", r"\blocomotive\b", r"\brailcar\b", r"\brailway\b", r"\brailroad\b", r"\btrain station\b", r"\brailway station\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "railway",
+        "label": "railway",
+        "positive_patterns": [r"\brailway\b", r"\brailroad\b", r"\brail line\b", r"\btracks\b", r"\btrain tracks\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "tram",
+        "label": "tram",
+        "positive_patterns": [r"\btram\b", r"\bstreetcar\b", r"\btrolley\b", r"\btramway\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "boat",
+        "label": "boat",
+        "positive_patterns": [r"\bboat\b", r"\bboats\b", r"\bferry\b", r"\bgondola\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "ship",
+        "label": "ship",
+        "positive_patterns": [r"\bship\b", r"\bsteamship\b", r"\bvessel\b", r"\bships\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "port",
+        "label": "port",
+        "positive_patterns": [r"\bport\b", r"\bharbor\b", r"\bharbour\b", r"\bdock\b", r"\bquay\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "river",
+        "label": "river",
+        "positive_patterns": [r"\briver\b", r"\briverside\b", r"\briverbank\b", r"\bcanal\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "shore",
+        "label": "shore",
+        "positive_patterns": [r"\bshore\b", r"\bshoreline\b", r"\bcoast\b", r"\bcoastline\b", r"\bseashore\b", r"\bbeach\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "mountain",
+        "label": "mountain",
+        "positive_patterns": [r"\bmountain\b", r"\bmountains\b", r"\balps\b", r"\bpeak\b", r"\bsummit\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "hill",
+        "label": "hill",
+        "positive_patterns": [r"\bhill\b", r"\bhills\b", r"\bhillside\b", r"\bhilly\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "garden",
+        "label": "garden",
+        "positive_patterns": [r"\bgarden\b", r"\bgardens\b", r"\bpublic garden\b", r"\bbotanical garden\b"],
     },
     {
         "benchmark_type": "concept",
         "query": "park",
         "label": "park",
-        "positive_patterns": [r"\bpark\b", r"\bgarden\b"],
+        "positive_patterns": [r"\bpark\b", r"\bparks\b", r"\bgarden\b", r"\bpublic garden\b"],
     },
     {
         "benchmark_type": "concept",
-        "query": "arched bridge over water",
-        "label": "bridge_over_water",
-        "positive_patterns": None,
+        "query": "people",
+        "label": "people",
+        "positive_patterns": [r"\bpeople\b", r"\bpersons\b", r"\bmen\b", r"\bwomen\b", r"\bpedestrians\b", r"\bfigures\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "crowd",
+        "label": "crowd",
+        "positive_patterns": [r"\bcrowd\b", r"\bcrowded\b", r"\bgathering\b", r"\bgroup of people\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "parade",
+        "label": "parade",
+        "positive_patterns": [r"\bparade\b", r"\bprocession\b", r"\bmarch\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "old postcard",
+        "label": "old_postcard",
+        "positive_patterns": [r"\bpostcard\b", r"\bold postcard\b", r"\bvintage postcard\b"],
+    },
+    {
+        "benchmark_type": "concept",
+        "query": "aerial view",
+        "label": "aerial_view",
+        "positive_patterns": [r"\baerial view\b", r"\bbird'?s[- ]eye view\b", r"\bview from above\b"],
     },
 ]
 
@@ -209,15 +377,22 @@ class SearchScorer:
         candidate_k=120,
         negative_text="background, sky, clouds, text, border, trees, road, people",
         temperature=10.0,
+        cluster_weight=1.0,
+        cls_weight=0.2,
+        metadata_weight=0.3,
     ):
         self.es = Elasticsearch(es_host)
         self.es_index = es_index
         self.vector_field = vector_field
         self.image_id_field = image_id_field
         self.cluster_id_field = cluster_id_field
+        self.embedding_type_field = "embedding_type"
         self.candidate_k = candidate_k
         self.temperature = float(temperature)
         self.negative_prompts = normalize_negative_prompts(negative_text)
+        self.cluster_weight = float(cluster_weight)
+        self.cls_weight = float(cls_weight)
+        self.metadata_weight = float(metadata_weight)
 
         self.backend = create_backend(
             backend_name=backend_name,
@@ -242,23 +417,28 @@ class SearchScorer:
                 "query_vector": query_vector,
                 "k": self.candidate_k,
                 "num_candidates": max(self.candidate_k * 4, 100),
+                "filter": self.cluster_doc_query(),
             },
             _source=[self.image_id_field, self.cluster_id_field],
             size=self.candidate_k,
         )
         return response["hits"]["hits"]
 
-    def search(self, query_text, result_mode="image", top_k=50):
-        prompts = [query_text] + self.negative_prompts
-        text_vectors = self.encode_prompts(prompts)
-        positive_vector = text_vectors[0].detach().cpu().numpy().tolist()
-        negative_vectors = [vec.detach().cpu().numpy().tolist() for vec in text_vectors[1:]]
+    def cluster_doc_query(self):
+        return {
+            "bool": {
+                "should": [
+                    {"term": {self.embedding_type_field: "cluster"}},
+                    {"bool": {"must_not": {"exists": {"field": self.embedding_type_field}}}},
+                ],
+                "minimum_should_match": 1,
+            }
+        }
 
-        preselected_hits = self.knn_candidates(positive_vector)
-        candidate_ids = [hit["_id"] for hit in preselected_hits]
-        if not candidate_ids:
-            return []
+    def combine_with_cluster_filter(self, query):
+        return {"bool": {"filter": [query, self.cluster_doc_query()]}}
 
+    def score_query(self, positive_vector, negative_vectors, candidate_query, size):
         script_source = f"""
 double pos = cosineSimilarity(params.positive_vector, '{self.vector_field}');
 double numer = Math.exp(pos * params.temperature);
@@ -277,7 +457,7 @@ return score;
             index=self.es_index,
             query={
                 "script_score": {
-                    "query": {"ids": {"values": candidate_ids}},
+                    "query": candidate_query,
                     "script": {
                         "source": script_source,
                         "params": {
@@ -288,20 +468,93 @@ return score;
                     },
                 }
             },
-            _source=[self.image_id_field, self.cluster_id_field],
+            _source=[self.image_id_field, self.cluster_id_field, self.embedding_type_field],
+            size=size,
+        )
+        return response["hits"]["hits"]
+
+    def image_auxiliary_scores(self, image_ids, positive_vector, negative_vectors):
+        if not image_ids or (self.cls_weight == 0.0 and self.metadata_weight == 0.0):
+            return {}
+        unique_image_ids = sorted(set(image_ids))
+        hits = self.score_query(
+            positive_vector=positive_vector,
+            negative_vectors=negative_vectors,
+            candidate_query={
+                "bool": {
+                    "filter": [
+                        {"terms": {self.image_id_field: unique_image_ids}},
+                        {"terms": {self.embedding_type_field: ["cls", "metadata"]}},
+                    ]
+                }
+            },
+            size=max(len(unique_image_ids) * 2, 1),
+        )
+        scores = {}
+        for hit in hits:
+            source = hit.get("_source", {})
+            image_id = source.get(self.image_id_field)
+            embedding_type = source.get(self.embedding_type_field)
+            if not image_id or embedding_type not in {"cls", "metadata"}:
+                continue
+            payload = scores.setdefault(image_id, {"cls_score": 0.0, "metadata_score": 0.0})
+            key = "cls_score" if embedding_type == "cls" else "metadata_score"
+            payload[key] = max(payload[key], float(hit.get("_score", 0.0)))
+        return scores
+
+    def apply_weighted_cluster_scores(self, scored_hits, auxiliary_scores):
+        for item in scored_hits:
+            aux = auxiliary_scores.get(item["image_id"], {})
+            cluster_score = float(item["cluster_score"])
+            cls_score = float(aux.get("cls_score", 0.0))
+            metadata_score = float(aux.get("metadata_score", 0.0))
+            item["cls_score"] = cls_score
+            item["metadata_score"] = metadata_score
+            item["score"] = (
+                self.cluster_weight * cluster_score
+                + self.cls_weight * cls_score
+                + self.metadata_weight * metadata_score
+            )
+        return scored_hits
+
+    def search(self, query_text, result_mode="image", top_k=50):
+        prompts = [query_text] + self.negative_prompts
+        text_vectors = self.encode_prompts(prompts)
+        positive_vector = text_vectors[0].detach().cpu().numpy().tolist()
+        negative_vectors = [vec.detach().cpu().numpy().tolist() for vec in text_vectors[1:]]
+
+        preselected_hits = self.knn_candidates(positive_vector)
+        candidate_ids = [hit["_id"] for hit in preselected_hits]
+        if not candidate_ids:
+            return []
+
+        hits = self.score_query(
+            positive_vector=positive_vector,
+            negative_vectors=negative_vectors,
+            candidate_query=self.combine_with_cluster_filter({"ids": {"values": candidate_ids}}),
             size=self.candidate_k,
         )
 
         scored_hits = []
-        for hit in response["hits"]["hits"]:
+        for hit in hits:
             source = hit.get("_source", {})
             scored_hits.append(
                 {
                     "image_id": source[self.image_id_field],
                     "cluster_id": int(source.get(self.cluster_id_field, 0)),
                     "score": float(hit.get("_score", 0.0)),
+                    "cluster_score": float(hit.get("_score", 0.0)),
+                    "cls_score": 0.0,
+                    "metadata_score": 0.0,
                 }
             )
+
+        auxiliary_scores = self.image_auxiliary_scores(
+            image_ids=[item["image_id"] for item in scored_hits],
+            positive_vector=positive_vector,
+            negative_vectors=negative_vectors,
+        )
+        scored_hits = self.apply_weighted_cluster_scores(scored_hits, auxiliary_scores)
 
         if result_mode == "cluster":
             return sorted(scored_hits, key=lambda item: item["score"], reverse=True)[:top_k]
@@ -661,7 +914,10 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
         f"Backend: <code>{escape_html(config.get('backend', ''))}</code> ",
         f"Index: <code>{escape_html(config.get('es_index', ''))}</code> ",
         f"Candidate K: <code>{escape_html(config.get('candidate_k', ''))}</code> ",
-        f"Temperature: <code>{escape_html(config.get('temperature', ''))}</code>",
+        f"Temperature: <code>{escape_html(config.get('temperature', ''))}</code> "
+        f"Weights: <code>cluster={escape_html(config.get('cluster_weight', ''))}, "
+        f"cls={escape_html(config.get('cls_weight', ''))}, "
+        f"metadata={escape_html(config.get('metadata_weight', ''))}</code>",
         "</p>",
         "</div>",
         "<div class='toc'><strong>Jump:</strong> <a href='#overview'>Overview</a><a href='#general'>General queries</a><a href='#specific'>Specific queries</a><a href='#logic'>Benchmark logic</a></div>",
@@ -778,17 +1034,17 @@ def write_query_browser_report(report_dir, image_df, cluster_df, gt_pairs_df, im
         )
         html_parts.append(
             _table_html(
-                image_hits_subset[["rank", "image_id", "cluster_id", "score", "is_relevant", "final_city", "final_place"]]
+                image_hits_subset[["rank", "image_id", "cluster_id", "score", "cluster_score", "cls_score", "metadata_score", "is_relevant", "final_city", "final_place"]]
                 if not image_hits_subset.empty else image_hits_subset,
-                ["rank", "image_id", "cluster_id", "score", "is_relevant", "final_city", "final_place"],
+                ["rank", "image_id", "cluster_id", "score", "cluster_score", "cls_score", "metadata_score", "is_relevant", "final_city", "final_place"],
                 "Top image-level hits (first 10)",
             )
         )
         html_parts.append(
             _table_html(
-                cluster_hits_subset[["rank", "image_id", "cluster_id", "score", "is_relevant", "final_city", "final_place"]]
+                cluster_hits_subset[["rank", "image_id", "cluster_id", "score", "cluster_score", "cls_score", "metadata_score", "is_relevant", "final_city", "final_place"]]
                 if not cluster_hits_subset.empty else cluster_hits_subset,
-                ["rank", "image_id", "cluster_id", "score", "is_relevant", "final_city", "final_place"],
+                ["rank", "image_id", "cluster_id", "score", "cluster_score", "cls_score", "metadata_score", "is_relevant", "final_city", "final_place"],
                 "Top cluster-level hits (first 10)",
             )
         )
@@ -834,6 +1090,7 @@ def write_markdown_report(path, config, image_rows, cluster_rows):
     lines.append(f"- Candidate K: `{config['candidate_k']}`")
     lines.append(f"- Negative prompts: `{config['negative_text']}`")
     lines.append(f"- Temperature: `{config['temperature']}`")
+    lines.append(f"- Cluster-centric weights: `cluster={config.get('cluster_weight')}`, `cls={config.get('cls_weight')}`, `metadata={config.get('metadata_weight')}`")
     if config.get("visualizations_dir"):
         lines.append(f"- Visualizations: `{config['visualizations_dir']}`")
     lines.append("")
@@ -882,6 +1139,9 @@ def main():
     parser.add_argument("--negative_text", default="background, sky, clouds, text, border, trees, road, people")
     parser.add_argument("--candidate_k", type=int, default=120)
     parser.add_argument("--temperature", type=float, default=10.0)
+    parser.add_argument("--cluster_weight", type=float, default=1.0)
+    parser.add_argument("--cls_weight", type=float, default=0.2)
+    parser.add_argument("--metadata_weight", type=float, default=0.3)
     parser.add_argument("--image_top_k", type=int, default=20)
     parser.add_argument("--cluster_top_k", type=int, default=50)
     parser.add_argument("--min_city_count", type=int, default=10)
@@ -897,6 +1157,8 @@ def main():
     parser.add_argument("--visualize_queries", choices=["all", "concept", "structured", "none"], default="all")
     parser.add_argument("--visualize_result_mode", choices=["image", "cluster"], default="image")
     parser.add_argument("--visualize_top_k", type=int, default=6)
+    parser.add_argument("--heatmap_top_percent", type=float, default=35.0)
+    parser.add_argument("--heatmap_min_score", type=float, default=None)
     parser.add_argument("--offline", action="store_true", help="Use local Hugging Face cache only")
     args = parser.parse_args()
 
@@ -946,6 +1208,9 @@ def main():
         candidate_k=args.candidate_k,
         negative_text=args.negative_text,
         temperature=args.temperature,
+        cluster_weight=args.cluster_weight,
+        cls_weight=args.cls_weight,
+        metadata_weight=args.metadata_weight,
     )
 
     visualizations_dir = None
@@ -965,6 +1230,9 @@ def main():
             model_id=args.model_id,
             model_version=args.model_version,
             lang_model=args.lang_model,
+            cluster_weight=args.cluster_weight,
+            cls_weight=args.cls_weight,
+            metadata_weight=args.metadata_weight,
         )
 
     image_rows = []
@@ -1020,6 +1288,9 @@ def main():
                     negative_prompts=visualizer.normalize_negative_prompts(args.negative_text),
                     output_path=output_path,
                     result_mode=args.visualize_result_mode,
+                    temperature=args.temperature,
+                    heatmap_top_percent=args.heatmap_top_percent,
+                    heatmap_min_score=args.heatmap_min_score,
                 )
 
         relevant = query_spec["relevant_images"]
@@ -1046,6 +1317,9 @@ def main():
                     "image_id": image_id,
                     "cluster_id": item["cluster_id"],
                     "score": item["score"],
+                    "cluster_score": item.get("cluster_score", 0.0),
+                    "cls_score": item.get("cls_score", 0.0),
+                    "metadata_score": item.get("metadata_score", 0.0),
                     "is_relevant": int(image_id in relevant),
                     "final_city": final_city,
                     "final_place": final_place,
@@ -1076,6 +1350,9 @@ def main():
                     "image_id": image_id,
                     "cluster_id": item["cluster_id"],
                     "score": item["score"],
+                    "cluster_score": item.get("cluster_score", 0.0),
+                    "cls_score": item.get("cls_score", 0.0),
+                    "metadata_score": item.get("metadata_score", 0.0),
                     "is_relevant": int(image_id in relevant),
                     "final_city": final_city,
                     "final_place": final_place,
@@ -1111,6 +1388,11 @@ def main():
         "cluster_top_k": args.cluster_top_k,
         "negative_text": args.negative_text,
         "temperature": args.temperature,
+        "cluster_weight": args.cluster_weight,
+        "cls_weight": args.cls_weight,
+        "metadata_weight": args.metadata_weight,
+        "heatmap_top_percent": args.heatmap_top_percent,
+        "heatmap_min_score": args.heatmap_min_score,
         "visualizations_dir": visualizations_dir,
         "ground_truth_json": gt_json_path,
         "ground_truth_csv": gt_csv_path,

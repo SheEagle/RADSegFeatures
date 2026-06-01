@@ -13,3 +13,7 @@ work_logs
 scratch/hf_models/
 scratch/
 images_metadata.csv
+sam3.pt
+datasets/coco_stuff164k/downloads/
+datasets/coco_stuff164k/annotations/
+datasets/coco_stuff164k/images/
