@@ -3,6 +3,7 @@ import json
 import math
 import os
 import sys
+import time
 from typing import List
 
 import clip
@@ -34,6 +35,15 @@ class VisionLanguageBackend:
 
     def encode_image_to_feature_map(self, image_input):
         raise NotImplementedError
+
+    @torch.no_grad()
+    def encode_image_to_feature_map_with_timing(self, image_input):
+        start = time.perf_counter()
+        feature_map = self.encode_image_to_feature_map(image_input)
+        return feature_map, {
+            "feature_extraction_s": time.perf_counter() - start,
+            "anyup_s": 0.0,
+        }
 
     @torch.no_grad()
     def encode_image_embedding(self, image_input, feature_map=None) -> torch.Tensor | None:
@@ -172,6 +182,32 @@ class TIPSAnyUpBackend(TIPSBackend):
             kwargs["output_size"] = self.anyup_output_size
         hr_features = self.upsampler(hr_image, transformed, **kwargs)
         return F.normalize(hr_features.to(self.device), dim=1)
+
+    @torch.no_grad()
+    def encode_image_to_feature_map_with_timing(self, image_input):
+        if not isinstance(image_input, Image.Image):
+            raise ValueError("TIPSAnyUpBackend expects a PIL.Image input.")
+
+        start = time.perf_counter()
+        transformed = TIPSBackend.encode_image_to_feature_map(
+            self,
+            self.transform_for_tips(image_input).unsqueeze(0),
+        )
+        feature_extraction_s = time.perf_counter() - start
+
+        start = time.perf_counter()
+        hr_image = build_hr_image_tensor(image_input, self.device)
+        kwargs = {}
+        if self.anyup_q_chunk_size is not None:
+            kwargs["q_chunk_size"] = self.anyup_q_chunk_size
+        if self.anyup_output_size is not None:
+            kwargs["output_size"] = self.anyup_output_size
+        hr_features = self.upsampler(hr_image, transformed, **kwargs)
+        anyup_s = time.perf_counter() - start
+        return F.normalize(hr_features.to(self.device), dim=1), {
+            "feature_extraction_s": feature_extraction_s,
+            "anyup_s": anyup_s,
+        }
 
     def transform_for_tips(self, image_input):
         return T.Compose(
@@ -337,6 +373,29 @@ class Talk2DINOAnyUpBackend(VisionLanguageBackend):
         hr_features = self.upsampler(hr_image, lr_features, **kwargs)
         hr_features = hr_features.to(self.device)
         return F.normalize(hr_features, dim=1)
+
+    @torch.no_grad()
+    def encode_image_to_feature_map_with_timing(self, image_input):
+        if not isinstance(image_input, Image.Image):
+            raise ValueError("Talk2DINOAnyUpBackend expects a PIL.Image input.")
+
+        start = time.perf_counter()
+        lr_features = extract_lr_feature_map(self.model, image_input, self.device)
+        feature_extraction_s = time.perf_counter() - start
+
+        start = time.perf_counter()
+        hr_image = build_hr_image_tensor(image_input, self.device)
+        kwargs = {}
+        if self.anyup_q_chunk_size is not None:
+            kwargs["q_chunk_size"] = self.anyup_q_chunk_size
+        if self.anyup_output_size is not None:
+            kwargs["output_size"] = self.anyup_output_size
+        hr_features = self.upsampler(hr_image, lr_features, **kwargs)
+        anyup_s = time.perf_counter() - start
+        return F.normalize(hr_features.to(self.device), dim=1), {
+            "feature_extraction_s": feature_extraction_s,
+            "anyup_s": anyup_s,
+        }
 
     @torch.no_grad()
     def encode_image_embedding(self, image_input, feature_map=None) -> torch.Tensor | None:

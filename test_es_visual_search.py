@@ -3,6 +3,7 @@ import csv
 import math
 import os
 import re
+import time
 import unicodedata
 import zlib
 
@@ -614,10 +615,19 @@ return numer / denom;
         temperature=10.0,
         heatmap_top_percent=35.0,
         heatmap_min_score=None,
+        return_timing=False,
     ):
+        timing = {
+            "visual_full_cluster_scoring_s": 0.0,
+            "redis_fetch_s": 0.0,
+            "heatmap_reconstruction_s": 0.0,
+            "figure_render_save_s": 0.0,
+            "visualization_total_s": 0.0,
+        }
+        total_start = time.perf_counter()
         if not results:
             print("No matches found.")
-            return
+            return timing if return_timing else None
 
         if result_mode == "cluster":
             display_items = [
@@ -639,12 +649,14 @@ return numer / denom;
                 display_items.append((result["image_id"], cluster_items, result["score"]))
 
         if result_mode != "cluster":
+            stage_start = time.perf_counter()
             full_heatmap_scores = self.score_all_clusters_for_images(
                 image_ids=[image_id for image_id, _, _ in display_items],
                 query_text=query_text,
                 negative_prompts=negative_prompts,
                 temperature=temperature,
             )
+            timing["visual_full_cluster_scoring_s"] = time.perf_counter() - stage_start
             display_items = [
                 (image_id, full_heatmap_scores.get(image_id, image_results), image_score)
                 for image_id, image_results, image_score in display_items
@@ -677,7 +689,10 @@ return numer / denom;
             ax = axes[idx // cols, idx % cols]
             image_path = self.resolve_image_path(image_id)
             image = Image.open(image_path).convert("RGB")
+            stage_start = time.perf_counter()
             cluster_id_map = self.load_feature_map(image_id)
+            timing["redis_fetch_s"] += time.perf_counter() - stage_start
+            stage_start = time.perf_counter()
             if result_mode == "cluster":
                 overlay = self.make_single_cluster_overlay(
                     image,
@@ -693,6 +708,7 @@ return numer / denom;
                     score_range=global_score_range,
                     score_threshold=score_threshold,
                 )
+            timing["heatmap_reconstruction_s"] += time.perf_counter() - stage_start
 
             ax.imshow(overlay)
             neg_text = ", ".join(negative_prompts)
@@ -710,12 +726,16 @@ return numer / denom;
             ax.axis("off")
 
         plt.tight_layout()
+        stage_start = time.perf_counter()
         if output_path:
             plt.savefig(output_path, dpi=200, bbox_inches="tight")
             print(f"Saved visualization to {output_path}")
         else:
             plt.show()
+        timing["figure_render_save_s"] = time.perf_counter() - stage_start
         plt.close(fig)
+        timing["visualization_total_s"] = time.perf_counter() - total_start
+        return timing if return_timing else None
 
 
 def main():

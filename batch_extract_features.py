@@ -3,6 +3,7 @@ import csv
 import json
 import os
 import re
+import time
 
 import torch
 import torch.nn.functional as F
@@ -221,22 +222,35 @@ class FeatureBatchExtractor:
         self.transform = self.backend.transform
 
     @torch.no_grad()
-    def process_tensor(self, img_tensor, image_id=None):
+    def process_tensor(self, img_tensor, image_id=None, return_timing=False):
+        timing = {
+            "feature_extraction_s": 0.0,
+            "anyup_s": 0.0,
+            "global_embedding_s": 0.0,
+            "region_construction_s": 0.0,
+            "metadata_embedding_s": 0.0,
+        }
+        total_start = time.perf_counter()
         if isinstance(img_tensor, torch.Tensor):
             img_tensor = img_tensor.to(self.device)
-        visual_aligned = self.backend.encode_image_to_feature_map(img_tensor)
+        visual_aligned, feature_timing = self.backend.encode_image_to_feature_map_with_timing(img_tensor)
+        timing.update(feature_timing)
+        stage_start = time.perf_counter()
         image_embedding = self.backend.encode_image_embedding(img_tensor, feature_map=visual_aligned)
+        timing["global_embedding_s"] = time.perf_counter() - stage_start
 
         _, channels, height_fm, width_fm = visual_aligned.shape
         dense_flat = visual_aligned.permute(0, 2, 3, 1).reshape(-1, channels)
         dense_flat = F.normalize(dense_flat, dim=-1)
 
+        stage_start = time.perf_counter()
         centers, labels = adaptive_spherical_kmeans(
             dense_flat,
             max_clusters=self.num_clusters,
             min_cluster_pixels=self.min_cluster_pixels,
             merge_similarity=self.merge_similarity,
         )
+        timing["region_construction_s"] = time.perf_counter() - stage_start
         label_map = labels.reshape(height_fm, width_fm)
 
         clusters = [
@@ -260,11 +274,14 @@ class FeatureBatchExtractor:
                 "mean_pooled_dense",
             )
         if image_id and image_id in self.metadata_by_image:
+            stage_start = time.perf_counter()
             metadata_embedding = self.backend.encode_text([self.metadata_by_image[image_id]])
+            timing["metadata_embedding_s"] = time.perf_counter() - stage_start
             result["metadata_embedding"] = metadata_embedding.squeeze(0).detach().cpu().tolist()
             result["metadata_text"] = self.metadata_by_image[image_id]
 
-        return result
+        timing["total_compute_s"] = time.perf_counter() - total_start
+        return (result, timing) if return_timing else result
 
 
 class FastImageDataset(Dataset):
@@ -331,6 +348,12 @@ if __name__ == "__main__":
     parser.add_argument("--lang_model", type=str, default="siglip2-g")
     parser.add_argument("--model_id", type=str, default=None)
     parser.add_argument("--metadata_csv", type=str, default=None, help="Optional metadata CSV used to add metadata embeddings")
+    parser.add_argument(
+        "--timing_csv",
+        type=str,
+        default=None,
+        help="Optional per-image timing CSV for offline indexing cost analysis",
+    )
     parser.add_argument("--anyup_entrypoint", type=str, default="anyup_multi_backbone")
     parser.add_argument("--anyup_use_natten", action="store_true")
     parser.add_argument("--anyup_q_chunk_size", type=int, default=None)
@@ -421,24 +444,75 @@ if __name__ == "__main__":
     output_dir = os.path.dirname(args.output_file)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+    if args.timing_csv:
+        timing_dir = os.path.dirname(args.timing_csv)
+        if timing_dir:
+            os.makedirs(timing_dir, exist_ok=True)
 
-    with open(args.output_file, "a", encoding="utf-8") as write_file:
-        for batch in tqdm(dataloader):
-            sample, img_name, is_valid = batch[0]
+    timing_fields = [
+        "image_id",
+        "backend",
+        "num_clusters",
+        "final_clusters",
+        "feature_map_height",
+        "feature_map_width",
+        "feature_extraction_s",
+        "anyup_s",
+        "global_embedding_s",
+        "region_construction_s",
+        "metadata_embedding_s",
+        "write_json_s",
+        "total_compute_s",
+        "total_wall_s",
+    ]
 
-            if not is_valid:
-                print(f"Skipping unreadable image: {img_name}")
-                continue
-            if img_name in processed_ids:
-                continue
+    timing_file = open(args.timing_csv, "a", encoding="utf-8", newline="") if args.timing_csv else None
+    timing_writer = None
+    if timing_file:
+        timing_writer = csv.DictWriter(timing_file, fieldnames=timing_fields)
+        if not os.path.exists(args.timing_csv) or os.path.getsize(args.timing_csv) == 0:
+            timing_writer.writeheader()
 
-            try:
-                result = extractor.process_tensor(
-                    sample.unsqueeze(0) if isinstance(sample, torch.Tensor) else sample,
-                    image_id=img_name,
-                )
-                result["image_id"] = img_name
-                write_file.write(json.dumps(result) + "\n")
-                write_file.flush()
-            except Exception as exc:
-                print(f"Error processing {img_name}: {format_exception(exc)}")
+    try:
+        with open(args.output_file, "a", encoding="utf-8") as write_file:
+            for batch in tqdm(dataloader):
+                sample, img_name, is_valid = batch[0]
+
+                if not is_valid:
+                    print(f"Skipping unreadable image: {img_name}")
+                    continue
+                if img_name in processed_ids:
+                    continue
+
+                total_wall_start = time.perf_counter()
+                try:
+                    result, timing = extractor.process_tensor(
+                        sample.unsqueeze(0) if isinstance(sample, torch.Tensor) else sample,
+                        image_id=img_name,
+                        return_timing=True,
+                    )
+                    result["image_id"] = img_name
+                    stage_start = time.perf_counter()
+                    write_file.write(json.dumps(result) + "\n")
+                    write_file.flush()
+                    write_json_s = time.perf_counter() - stage_start
+                    if timing_writer:
+                        timing_writer.writerow(
+                            {
+                                "image_id": img_name,
+                                "backend": args.backend,
+                                "num_clusters": args.num_clusters,
+                                "final_clusters": len(result.get("clusters", [])),
+                                "feature_map_height": result.get("feature_map_size", ["", ""])[0],
+                                "feature_map_width": result.get("feature_map_size", ["", ""])[1],
+                                **timing,
+                                "write_json_s": write_json_s,
+                                "total_wall_s": time.perf_counter() - total_wall_start,
+                            }
+                        )
+                        timing_file.flush()
+                except Exception as exc:
+                    print(f"Error processing {img_name}: {format_exception(exc)}")
+    finally:
+        if timing_file:
+            timing_file.close()

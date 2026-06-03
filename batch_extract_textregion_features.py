@@ -1,6 +1,8 @@
 import argparse
+import csv
 import json
 import os
+import time
 from pathlib import Path
 
 import torch
@@ -68,18 +70,34 @@ def extract_region_record(
     representative_mode,
     mask_pooling_mode,
     device,
+    return_timing=False,
 ):
-    feature_map = backend.encode_image_to_feature_map(image)
+    timing = {
+        "feature_extraction_s": 0.0,
+        "anyup_s": 0.0,
+        "global_embedding_s": 0.0,
+        "segmentation_s": 0.0,
+        "region_construction_s": 0.0,
+        "metadata_embedding_s": 0.0,
+    }
+    total_start = time.perf_counter()
+    feature_map, feature_timing = backend.encode_image_to_feature_map_with_timing(image)
+    timing.update(feature_timing)
+    stage_start = time.perf_counter()
     image_embedding = backend.encode_image_embedding(image, feature_map=feature_map)
+    timing["global_embedding_s"] = time.perf_counter() - stage_start
 
     if segmentation_mode == "subobject":
+        stage_start = time.perf_counter()
         centers, label_map = subobject_feature_map(
             feature_map,
             image,
             subobject_segmenter,
             min_mask_pixels=min_cluster_pixels,
         )
+        timing["segmentation_s"] = time.perf_counter() - stage_start
     elif segmentation_mode == "textregion":
+        stage_start = time.perf_counter()
         image_np = torch.as_tensor(
             __import__("numpy").asarray(image.convert("RGB")).copy(),
             device=device,
@@ -91,8 +109,10 @@ def extract_region_record(
         autocast_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=autocast_dtype, enabled=device == "cuda"):
             sam2_masks = textregion_generator.generate_for_batch(image_tensor_for_sam2, [ori_shape], None)
+        timing["segmentation_s"] = time.perf_counter() - stage_start
 
         if sam2_masks and sam2_masks[0]:
+            stage_start = time.perf_counter()
             masks = torch.stack([mask["segmentations"] for mask in sam2_masks[0]])
             centers, label_map = feature_regions_from_masks(
                 feature_map,
@@ -102,12 +122,15 @@ def extract_region_record(
                 representative_mode=representative_mode,
                 mask_pooling_mode=mask_pooling_mode,
             )
+            timing["region_construction_s"] = time.perf_counter() - stage_start
         else:
+            stage_start = time.perf_counter()
             _, channels, height_fm, width_fm = feature_map.shape
             flat = feature_map.permute(0, 2, 3, 1).reshape(-1, channels)
             center = torch.nn.functional.normalize(flat.mean(dim=0, keepdim=True), dim=-1)
             centers = center
             label_map = torch.zeros((height_fm, width_fm), device=feature_map.device, dtype=torch.long)
+            timing["region_construction_s"] = time.perf_counter() - stage_start
     else:
         raise ValueError(f"Unsupported segmentation_mode: {segmentation_mode}")
 
@@ -142,12 +165,15 @@ def extract_region_record(
 
     metadata_text = metadata_by_image.get(image_id)
     if metadata_text:
+        stage_start = time.perf_counter()
         metadata_embedding, encoded_text = safe_encode_metadata(backend, metadata_text)
+        timing["metadata_embedding_s"] = time.perf_counter() - stage_start
         if metadata_embedding is not None:
             result["metadata_embedding"] = metadata_embedding
             result["metadata_text"] = encoded_text
 
-    return result
+    timing["total_compute_s"] = time.perf_counter() - total_start
+    return (result, timing) if return_timing else result
 
 
 def main():
@@ -205,6 +231,12 @@ def main():
     parser.add_argument("--min_cluster_pixels", type=int, default=8)
     parser.add_argument("--representative_mode", choices=["mean", "geometric_median"], default="geometric_median")
     parser.add_argument("--mask_pooling_mode", choices=["hard", "soft"], default="hard")
+    parser.add_argument(
+        "--timing_csv",
+        type=str,
+        default=None,
+        help="Optional per-image timing CSV for offline indexing cost analysis.",
+    )
     args = parser.parse_args()
 
     metadata_by_image = load_metadata_texts(args.metadata_csv)
@@ -274,38 +306,94 @@ def main():
     output_dir = os.path.dirname(args.output_file)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+    if args.timing_csv:
+        timing_dir = os.path.dirname(args.timing_csv)
+        if timing_dir:
+            os.makedirs(timing_dir, exist_ok=True)
+
+    timing_fields = [
+        "image_id",
+        "backend",
+        "segmentation_mode",
+        "representative_mode",
+        "mask_pooling_mode",
+        "final_clusters",
+        "feature_map_height",
+        "feature_map_width",
+        "feature_extraction_s",
+        "anyup_s",
+        "global_embedding_s",
+        "segmentation_s",
+        "region_construction_s",
+        "metadata_embedding_s",
+        "write_json_s",
+        "total_compute_s",
+        "total_wall_s",
+    ]
 
     progress_label = f"Extracting {args.segmentation_mode} vectors"
-    with open(args.output_file, "a", encoding="utf-8") as write_file:
-        for batch in tqdm(dataloader, desc=progress_label):
-            image, image_id, is_valid = batch[0]
-            if not is_valid:
-                print(f"Skipping unreadable image: {image_id}")
-                continue
-            if image_id in processed_ids:
-                continue
-            try:
-                result = extract_region_record(
-                    backend=backend,
-                    segmentation_mode=args.segmentation_mode,
-                    textregion_generator=textregion_generator,
-                    subobject_segmenter=subobject_segmenter,
-                    image=image,
-                    image_id=image_id,
-                    metadata_by_image=metadata_by_image,
-                    textregion_max_masks=args.textregion_max_masks,
-                    min_cluster_pixels=args.min_cluster_pixels,
-                    representative_mode=args.representative_mode,
-                    mask_pooling_mode=args.mask_pooling_mode,
-                    device=args.device,
-                )
-                write_file.write(json.dumps(result) + "\n")
-                write_file.flush()
-            except Exception as exc:
-                print(f"Error processing {image_id}: {format_exception(exc)}")
-            finally:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+    timing_file = open(args.timing_csv, "a", encoding="utf-8", newline="") if args.timing_csv else None
+    timing_writer = None
+    if timing_file:
+        timing_writer = csv.DictWriter(timing_file, fieldnames=timing_fields)
+        if not os.path.exists(args.timing_csv) or os.path.getsize(args.timing_csv) == 0:
+            timing_writer.writeheader()
+
+    try:
+        with open(args.output_file, "a", encoding="utf-8") as write_file:
+            for batch in tqdm(dataloader, desc=progress_label):
+                image, image_id, is_valid = batch[0]
+                if not is_valid:
+                    print(f"Skipping unreadable image: {image_id}")
+                    continue
+                if image_id in processed_ids:
+                    continue
+                total_wall_start = time.perf_counter()
+                try:
+                    result, timing = extract_region_record(
+                        backend=backend,
+                        segmentation_mode=args.segmentation_mode,
+                        textregion_generator=textregion_generator,
+                        subobject_segmenter=subobject_segmenter,
+                        image=image,
+                        image_id=image_id,
+                        metadata_by_image=metadata_by_image,
+                        textregion_max_masks=args.textregion_max_masks,
+                        min_cluster_pixels=args.min_cluster_pixels,
+                        representative_mode=args.representative_mode,
+                        mask_pooling_mode=args.mask_pooling_mode,
+                        device=args.device,
+                        return_timing=True,
+                    )
+                    stage_start = time.perf_counter()
+                    write_file.write(json.dumps(result) + "\n")
+                    write_file.flush()
+                    write_json_s = time.perf_counter() - stage_start
+                    if timing_writer:
+                        timing_writer.writerow(
+                            {
+                                "image_id": image_id,
+                                "backend": args.backend,
+                                "segmentation_mode": args.segmentation_mode,
+                                "representative_mode": args.representative_mode,
+                                "mask_pooling_mode": args.mask_pooling_mode,
+                                "final_clusters": len(result.get("clusters", [])),
+                                "feature_map_height": result.get("feature_map_size", ["", ""])[0],
+                                "feature_map_width": result.get("feature_map_size", ["", ""])[1],
+                                **timing,
+                                "write_json_s": write_json_s,
+                                "total_wall_s": time.perf_counter() - total_wall_start,
+                            }
+                        )
+                        timing_file.flush()
+                except Exception as exc:
+                    print(f"Error processing {image_id}: {format_exception(exc)}")
+                finally:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+    finally:
+        if timing_file:
+            timing_file.close()
 
 
 if __name__ == "__main__":
