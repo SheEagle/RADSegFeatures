@@ -109,6 +109,42 @@ def _recompute_centers(features, labels, num_clusters):
     return centers, counts
 
 
+def geometric_median(points, num_iters=32, eps=1e-6):
+    """Return a robust cluster representative using Weiszfeld iterations."""
+    if points.shape[0] == 0:
+        raise ValueError("geometric_median requires at least one point")
+    if points.shape[0] == 1:
+        return points[0]
+
+    center = points.mean(dim=0)
+    for _ in range(num_iters):
+        distances = torch.linalg.norm(points - center, dim=1).clamp_min(eps)
+        weights = 1.0 / distances
+        next_center = (points * weights[:, None]).sum(dim=0) / weights.sum()
+        if torch.linalg.norm(next_center - center) < eps:
+            center = next_center
+            break
+        center = next_center
+    return center
+
+
+def recompute_representatives(features, labels, centers, mode="mean"):
+    if mode == "mean":
+        return centers
+    if mode != "geometric_median":
+        raise ValueError(f"Unsupported representative mode: {mode}")
+
+    representatives = []
+    for cluster_id in range(centers.shape[0]):
+        cluster_points = features[labels == cluster_id]
+        if cluster_points.numel() == 0:
+            representatives.append(centers[cluster_id])
+        else:
+            representatives.append(geometric_median(cluster_points))
+    representatives = torch.stack(representatives, dim=0) if representatives else centers[:0]
+    return F.normalize(representatives, p=2, dim=-1)
+
+
 def adaptive_spherical_kmeans(
     features,
     max_clusters=100,
@@ -192,6 +228,7 @@ class FeatureBatchExtractor:
         num_clusters=100,
         min_cluster_pixels=8,
         merge_similarity=0.985,
+        representative_mode="mean",
         model_version="c-radio_v4-h",
         lang_model="siglip2-g",
         model_id=None,
@@ -205,6 +242,7 @@ class FeatureBatchExtractor:
         self.num_clusters = num_clusters
         self.min_cluster_pixels = min_cluster_pixels
         self.merge_similarity = merge_similarity
+        self.representative_mode = representative_mode
         self.backend_name = backend_name
         self.metadata_by_image = metadata_by_image or {}
 
@@ -249,6 +287,12 @@ class FeatureBatchExtractor:
             max_clusters=self.num_clusters,
             min_cluster_pixels=self.min_cluster_pixels,
             merge_similarity=self.merge_similarity,
+        )
+        centers = recompute_representatives(
+            dense_flat,
+            labels,
+            centers,
+            mode=self.representative_mode,
         )
         timing["region_construction_s"] = time.perf_counter() - stage_start
         label_map = labels.reshape(height_fm, width_fm)
@@ -344,6 +388,12 @@ if __name__ == "__main__":
         default=0.985,
         help="Merge clusters whose cosine similarity exceeds this threshold",
     )
+    parser.add_argument(
+        "--representative_mode",
+        choices=["mean", "geometric_median"],
+        default="mean",
+        help="How to compute the vector stored for each final cluster",
+    )
     parser.add_argument("--model_version", type=str, default="c-radio_v4-h")
     parser.add_argument("--lang_model", type=str, default="siglip2-g")
     parser.add_argument("--model_id", type=str, default=None)
@@ -379,6 +429,7 @@ if __name__ == "__main__":
         lang_model=args.lang_model,
         min_cluster_pixels=args.min_cluster_pixels,
         merge_similarity=args.merge_similarity,
+        representative_mode=args.representative_mode,
         model_id=args.model_id,
         device=args.device,
         anyup_entrypoint=args.anyup_entrypoint,
